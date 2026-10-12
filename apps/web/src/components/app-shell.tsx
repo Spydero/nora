@@ -32,9 +32,13 @@ export function AppShell({ children }: { children: ReactNode }) {
 
   return (
     <div className="flex min-h-screen flex-col">
-      <AppHeader profile={state.profile} />
-      <div className="flex-1 max-md:pb-16">{allowed && children}</div>
-      <MobileNav profile={state.profile} />
+      <div className="contents print:hidden">
+        <AppHeader profile={state.profile} />
+      </div>
+      <div className="flex-1 max-md:pb-16 print:pb-0">{allowed && children}</div>
+      <div className="contents print:hidden">
+        <MobileNav profile={state.profile} />
+      </div>
     </div>
   );
 }

@@ -196,17 +196,39 @@ export function ResultView({
         </h3>
         <FactChips label="You have" items={result.findings.present} tone="present" />
         <FactChips label="You don’t have" items={result.findings.absent} tone="absent" />
-        <FactChips label="Not answered" items={result.findings.unknown} tone="unknown" />
+        <FactChips label="Not sure or skipped" items={result.findings.unknown} tone="unknown" />
         {result.answerConflicts?.map((c) => (
           <p key={c.key} className="flex items-start gap-2 rounded-card bg-warning-bg px-3 py-2 text-secondary">
             <AlertTriangle aria-hidden className="mt-0.5 size-4 shrink-0 text-warning" />
-            <span>
-              You answered “{c.answered === "yes" ? "Yes" : "No"}” to {c.label.toLowerCase()}, but a later message {c.mentioned === "yes" ? "mentioned it" : "suggested you don’t have it"}.{" "}
-              {c.resolution === "treated_as_present" ? "Because it can be a warning sign, Nora treated it as present to be safe." : "Nora kept your answer."}
-            </span>
+            {c.answeredIn === "profile" ? (
+              <span>
+                Your health profile {c.answered === "yes" ? "lists" : "doesn’t list"} {c.label.toLowerCase()}, but your message{" "}
+                {c.mentioned === "yes" ? "mentioned it" : "suggested you don’t have it"}.{" "}
+                {c.resolution === "treated_as_present" ? "Nora used what you said for this check." : "To be safe, Nora kept what your profile says."}{" "}
+                <a href="/settings" className="font-medium text-brand-teal underline-offset-2 hover:underline">
+                  Update your profile
+                </a>
+              </span>
+            ) : (
+              <span>
+                You answered “{c.answered === "yes" ? "Yes" : "No"}” to {c.label.toLowerCase()}, but a later message {c.mentioned === "yes" ? "mentioned it" : "suggested you don’t have it"}.{" "}
+                {c.resolution === "treated_as_present" ? "Because it can be a warning sign, Nora treated it as present to be safe." : "Nora kept your answer."}
+              </span>
+            )}
           </p>
         ))}
       </section>
+
+      {result.findings.history && (result.findings.history.present.length > 0 || result.findings.history.absent.length > 0) && (
+        <section aria-labelledby="background-h" className="flex flex-col gap-2">
+          <h3 id="background-h" className="text-card-title font-semibold">
+            Your health background
+          </h3>
+          <p className="text-meta text-fg-muted">Long-term conditions and medicines that affect this advice. They’re kept separate from today’s symptoms.</p>
+          <FactChips label="You have" items={result.findings.history.present} tone="present" />
+          <FactChips label="You don’t have" items={result.findings.history.absent} tone="absent" />
+        </section>
+      )}
 
       {usedRecords.length > 0 && (
         <section aria-labelledby="records-h" className="flex flex-col gap-2">
@@ -246,6 +268,11 @@ export function ResultView({
                     {e.heading ? ` — ${e.heading}` : ""} <span className="text-fg-muted">· {e.publisher}</span>
                   </summary>
                   <p className="mt-2 text-secondary text-fg-muted">{e.excerpt}</p>
+                  {e.url && (
+                    <a href={e.url} target="_blank" rel="noopener noreferrer" className="mt-1 inline-block text-meta font-medium text-brand-teal underline-offset-2 hover:underline">
+                      Read the original guidance
+                    </a>
+                  )}
                 </details>
               </li>
             ))}

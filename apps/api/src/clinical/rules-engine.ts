@@ -78,6 +78,33 @@ export function detectConcerns(bundle: BundleContent, facts: FactMap): ConcernDe
   return specific.length ? specific : matched.slice(0, 1);
 }
 
+/** Not yet asked or told; an "I'm not sure" or a skip is an answer, not an open fact. */
+export const isOpen = (f: FactValue | undefined) => f === undefined || f.state === 'NOT_ASKED';
+
+/**
+ * Three-valued evaluation: `undefined` while facts that are still open could
+ * decide the condition either way, so callers can tell which questions could
+ * still change an outcome.
+ */
+export function evaluatePartial(condition: Condition, facts: FactMap): boolean | undefined {
+  if ('all' in condition) {
+    const parts = condition.all.map((c) => evaluatePartial(c, facts));
+    if (parts.includes(false)) return false;
+    return parts.every((p) => p === true) ? true : undefined;
+  }
+  if ('any' in condition) {
+    const parts = condition.any.map((c) => evaluatePartial(c, facts));
+    if (parts.includes(true)) return true;
+    return parts.every((p) => p === false) ? false : undefined;
+  }
+  if ('not' in condition) {
+    const inner = evaluatePartial(condition.not, facts);
+    return inner === undefined ? undefined : !inner;
+  }
+  if ('is' in condition && (condition.is === 'known' || condition.is === 'unknown')) return evaluate(condition, facts);
+  return isOpen(facts[condition.fact]) ? undefined : evaluate(condition, facts);
+}
+
 /** Facts a condition refers to. */
 export function conditionFacts(condition: Condition): string[] {
   if ('all' in condition) return condition.all.flatMap(conditionFacts);
@@ -94,28 +121,66 @@ export function warningLevel(bundle: BundleContent, careItemId: string, facts: F
 
 /** The minimum level for a warning sign that no rule accounts for. */
 export const WARNING_SIGN_FLOOR: UrgencyLevel = 'soon';
+/** The minimum level when the patient couldn't say whether they have a warning sign, or skipped it. */
+export const UNRESOLVED_SAFETY_FLOOR: UrgencyLevel = 'soon';
+
+/** "1 day", "3 days", "less than a day"; units are stored in the plural. */
+export function quantity(value: number | null | undefined, unit: string | undefined): string {
+  if (!unit) return String(value);
+  if (unit === 'days' && value === 0) return 'less than a day';
+  return `${value} ${value === 1 ? unit.replace(/s$/, '') : unit}`;
+}
 
 function describe(bundle: BundleContent, keys: string[], facts: FactMap): string {
   return keys
     .map((k) => {
       const def = bundle.facts[k]!;
-      const f = facts[k]!;
-      return def.type === 'number' ? `${def.label.toLowerCase()}: ${f.value}${def.unit ? ` ${def.unit}` : ''}` : def.label.toLowerCase();
+      return def.type === 'number' ? `${def.label.toLowerCase()}: ${quantity(facts[k]!.value, def.unit)}` : def.label.toLowerCase();
     })
     .join('; ');
 }
 
+const applicableRules = (bundle: BundleContent, concerns: ConcernDef[]) => {
+  const codes = new Set(concerns.map((c) => c.code));
+  return bundle.urgencyRules.filter((r) => !r.concerns || r.concerns.some((c) => codes.has(c)));
+};
+
 /**
- * Bundle rules decide urgency, then two guards make sure a high-risk finding
+ * Warning signs that matter for these concerns: the ones their safety
+ * questions screen for, their required facts, and any critical fact a rule or
+ * "get help if…" warning for them depends on.
+ */
+export function safetyFacts(bundle: BundleContent, concerns: ConcernDef[]): string[] {
+  const keys = new Set<string>();
+  for (const c of concerns) {
+    for (const id of c.questions) {
+      const q = bundle.questions[id];
+      if (q?.purpose === 'safety') questionFactKeys(q).forEach((k) => keys.add(k));
+    }
+    c.requiredFacts.forEach((k) => keys.add(k));
+    for (const id of c.careItems) bundle.careItems[id]?.escalate.forEach((e) => conditionFacts(e.when).forEach((k) => keys.add(k)));
+  }
+  for (const r of applicableRules(bundle, concerns)) conditionFacts(r.when).forEach((k) => keys.add(k));
+  return [...keys].filter((k) => bundle.facts[k]?.critical && bundle.facts[k]?.type === 'boolean');
+}
+
+/** Warning signs the patient was asked about but couldn't confirm or rule out. */
+export function unresolvedSafety(bundle: BundleContent, facts: FactMap, concerns: ConcernDef[]): string[] {
+  return safetyFacts(bundle, concerns).filter((k) => facts[k]?.state === 'UNKNOWN' || facts[k]?.state === 'DECLINED');
+}
+
+/**
+ * Bundle rules decide urgency, then three guards make sure a high-risk finding
  * is never outweighed by a routine or self-care default:
  * - a "get help if…" warning for this concern that has already happened
  *   raises urgency to the level that warning calls for;
  * - a critical fact no triggered rule accounts for raises urgency to at
- *   least WARNING_SIGN_FLOOR.
+ *   least WARNING_SIGN_FLOOR;
+ * - a warning sign the patient couldn't rule out raises urgency to at least
+ *   UNRESOLVED_SAFETY_FLOOR, because Nora can't assume it is absent.
  */
 export function evaluateUrgency(bundle: BundleContent, facts: FactMap, concerns: ConcernDef[]): UrgencyOutcome {
-  const codes = new Set(concerns.map((c) => c.code));
-  const fired = bundle.urgencyRules.filter((r) => (!r.concerns || r.concerns.some((c) => codes.has(c))) && evaluate(r.when, facts));
+  const fired = applicableRules(bundle, concerns).filter((r) => evaluate(r.when, facts));
   const triggered: TriggeredRule[] = fired.map((r) => ({ ruleId: r.id, level: r.level, message: r.message, sourceKey: r.sourceKey, careItems: r.careItems }));
   const covered = new Set(fired.flatMap((r) => conditionFacts(r.when)));
   const present = (k: string) => facts[k]?.state === 'PRESENT';
@@ -127,7 +192,16 @@ export function evaluateUrgency(bundle: BundleContent, facts: FactMap, concerns:
     if (!level) continue;
     const met = [...new Set(item.escalate.filter((e) => evaluate(e.when, facts)).flatMap((e) => conditionFacts(e.when)))].filter(present);
     met.forEach((k) => covered.add(k));
-    triggered.push({ ruleId: `warn:${id}`, level, message: `You told Nora about: ${describe(bundle, met, facts)}. ${item.text}`, sourceKey: item.sourceKey, careItems: [] });
+    const said = met.filter((k) => bundle.facts[k]?.kind !== 'history');
+    const background = met.filter((k) => bundle.facts[k]?.kind === 'history');
+    const message = [
+      said.length ? `You told Nora about: ${describe(bundle, said, facts)}.` : '',
+      background.length ? `Your health profile lists: ${describe(bundle, background, facts)}.` : '',
+      item.text,
+    ]
+      .filter(Boolean)
+      .join(' ');
+    triggered.push({ ruleId: `warn:${id}`, level, message, sourceKey: item.sourceKey, careItems: [] });
   }
 
   for (const [key, def] of Object.entries(bundle.facts)) {
@@ -136,6 +210,18 @@ export function evaluateUrgency(bundle: BundleContent, facts: FactMap, concerns:
       ruleId: `warning_sign:${key}`,
       level: WARNING_SIGN_FLOOR,
       message: `${def.label} is a warning sign, so a doctor should check it.`,
+      sourceKey: 'src_red_flags',
+      careItems: [],
+    });
+  }
+
+  const unresolved = unresolvedSafety(bundle, facts, concerns);
+  if (unresolved.length) {
+    const labels = unresolved.map((k) => bundle.facts[k]!.label.toLowerCase());
+    triggered.push({
+      ruleId: 'unresolved_safety',
+      level: UNRESOLVED_SAFETY_FLOOR,
+      message: `Nora couldn’t rule out ${labels.length > 1 ? `${labels.slice(0, -1).join('; ')} or ${labels.at(-1)}` : labels[0]}. These can be warning signs, so a doctor should check.`,
       sourceKey: 'src_red_flags',
       careItems: [],
     });
@@ -186,37 +272,106 @@ function isResolved(q: QuestionDef, facts: FactMap): boolean {
 
 /**
  * The question as the patient should see it: multi-select options the patient
- * already confirmed or ruled out are dropped, so an answer can only change
- * facts that are still open.
+ * already answered (yes, no or not sure) are dropped, so an answer can only
+ * change facts that are still open.
  */
 export function presentQuestion(q: QuestionDef, facts: FactMap): QuestionDef {
   if (q.type !== 'multi') return q;
-  return { ...q, options: (q.options ?? []).filter((o) => !o.factKey || !isKnown(facts[o.factKey])) };
+  return { ...q, options: (q.options ?? []).filter((o) => !o.factKey || isOpen(facts[o.factKey])) };
+}
+
+/** Why a question is worth asking now, most important first. */
+export type QuestionReason = 'safety' | 'urgency' | 'required' | 'history' | 'detail';
+
+export const QUESTION_REASON_TEXT: Record<QuestionReason, string> = {
+  safety: 'Warning signs',
+  urgency: 'Could change how soon you should be seen',
+  required: 'Needed to assess this properly',
+  history: 'Your health background',
+  detail: 'Helps tell possible causes apart',
+};
+
+export interface PlannedQuestion {
+  id: string;
+  question: QuestionDef;
+  reason: QuestionReason;
+}
+
+const LEVEL_WEIGHT: Record<UrgencyLevel, number> = { emergency: 1, urgent: 2, soon: 3, routine: 5, self_care: 9 };
+const REQUIRED_WEIGHT = 4;
+const DETAIL_WEIGHT = 7;
+
+/**
+ * Open facts worth asking about, weighted by what their answer could change:
+ * a rule or "get help if…" warning that could still fire above the current
+ * urgency, a concern's required facts, then the features that tell its
+ * candidate explanations apart. A fact whose answer can no longer change
+ * anything gets no weight, so it is not asked. Open facts that no remaining
+ * question asks about are assumed to stay unconfirmed, so a rule that needs
+ * one of them doesn't make its other facts worth asking.
+ */
+function factWeights(bundle: BundleContent, facts: FactMap, concerns: ConcernDef[], askable: ReadonlySet<string>): Map<string, number> {
+  const weights = new Map<string, number>();
+  const bump = (key: string, w: number) => {
+    if (isOpen(facts[key])) weights.set(key, Math.min(weights.get(key) ?? Number.POSITIVE_INFINITY, w));
+  };
+  const current = urgencyRank(evaluateUrgency(bundle, facts, concerns).level);
+  const consider = (when: Condition, level: UrgencyLevel) => {
+    if (urgencyRank(level) <= current || evaluatePartial(when, facts) !== undefined) return;
+    const keys = conditionFacts(when);
+    const unaskable = Object.fromEntries(keys.filter((k) => isOpen(facts[k]) && !askable.has(k)).map((k) => [k, { state: 'UNKNOWN' as const }]));
+    if (evaluatePartial(when, { ...facts, ...unaskable }) === false) return;
+    keys.forEach((k) => bump(k, LEVEL_WEIGHT[level]));
+  };
+  for (const r of applicableRules(bundle, concerns)) consider(r.when, r.level);
+  for (const id of new Set(concerns.flatMap((c) => c.careItems))) bundle.careItems[id]?.escalate.forEach((e) => consider(e.when, e.level));
+  concerns.flatMap((c) => c.requiredFacts).forEach((k) => bump(k, REQUIRED_WEIGHT));
+  const candidates = concerns.flatMap((c) => c.explanations);
+  if (candidates.length > 1) candidates.flatMap((e) => [...e.supportingFacts, ...e.againstFacts]).forEach((k) => bump(k, DETAIL_WEIGHT));
+  return weights;
+}
+
+function reasonFor(q: QuestionDef, weight: number): QuestionReason {
+  if (q.purpose === 'safety') return 'safety';
+  if (q.purpose === 'history') return 'history';
+  if (weight === 0 || weight === REQUIRED_WEIGHT) return 'required';
+  return weight < DETAIL_WEIGHT ? 'urgency' : 'detail';
 }
 
 /**
- * Screening questions apply only while Nora cannot tell what the concern is;
- * then each concern's own questions, starting with its warning signs, skipping
- * anything already asked or already told.
+ * Every question still worth asking, in the order Nora should ask them.
+ * There is no question budget: the plan is empty only when the concern's
+ * warning signs have been screened, its required facts are known, and no
+ * open fact could still change the urgency or tell the explanations apart.
+ * Questions already answered, or whose facts the patient already told Nora
+ * (in their own words or from their profile), are never planned.
  */
-export function nextQuestion(
-  bundle: BundleContent,
-  facts: FactMap,
-  concerns: ConcernDef[],
-  asked: ReadonlySet<string>,
-): { id: string; question: QuestionDef } | null {
-  const ordered = [...bundle.screeningQuestions, ...concerns.flatMap((c) => c.questions)];
-  const seen = new Set<string>();
-  for (const id of ordered) {
-    if (seen.has(id)) continue;
-    seen.add(id);
+export function planQuestions(bundle: BundleContent, facts: FactMap, concerns: ConcernDef[], asked: ReadonlySet<string>): PlannedQuestion[] {
+  const screening = new Set(bundle.screeningQuestions);
+  const ordered = [...new Set([...bundle.screeningQuestions, ...concerns.flatMap((c) => c.questions)])];
+  const pending = new Set(
+    ordered.filter((id) => {
+      const q = bundle.questions[id];
+      return !!q && !asked.has(id) && !isResolved(q, facts) && (!q.askIf || evaluate(q.askIf, facts));
+    }),
+  );
+  const askable = new Set([...pending].flatMap((id) => questionFactKeys(bundle.questions[id]!)));
+  const weights = factWeights(bundle, facts, concerns, askable);
+  const plan: (PlannedQuestion & { weight: number; index: number })[] = [];
+  ordered.forEach((id, index) => {
     const q = bundle.questions[id];
-    if (!q || asked.has(id)) continue;
-    if (q.askIf && !evaluate(q.askIf, facts)) continue;
-    if (isResolved(q, facts)) continue;
-    return { id, question: q };
-  }
-  return null;
+    if (!q || !pending.has(id)) return;
+    const open = questionFactKeys(q).filter((k) => isOpen(facts[k]));
+    const weight = screening.has(id) || q.purpose === 'safety' ? 0 : Math.min(...open.map((k) => weights.get(k) ?? Number.POSITIVE_INFINITY));
+    if (!Number.isFinite(weight)) return;
+    plan.push({ id, question: q, reason: reasonFor(q, weight), weight, index });
+  });
+  return plan.sort((a, b) => a.weight - b.weight || a.index - b.index).map(({ id, question, reason }) => ({ id, question, reason }));
+}
+
+/** The most important question still worth asking, or null when the assessment is complete. */
+export function nextQuestion(bundle: BundleContent, facts: FactMap, concerns: ConcernDef[], asked: ReadonlySet<string>): PlannedQuestion | null {
+  return planQuestions(bundle, facts, concerns, asked)[0] ?? null;
 }
 
 export function missingRequiredFacts(bundle: BundleContent, facts: FactMap, concerns: ConcernDef[]): string[] {

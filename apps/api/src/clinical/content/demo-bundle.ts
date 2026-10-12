@@ -5,7 +5,7 @@ import { type BundleContent, type BundleInput, bundleContentSchema, type Conditi
  * bounded-assessment pipeline end to end; must be replaced by clinician-authored,
  * approved content before any real patient use.
  */
-export const DEMO_BUNDLE_VERSION = '2026.10-demo.4';
+export const DEMO_BUNDLE_VERSION = '2026.10-demo.6';
 
 type QuestionInput = BundleInput['questions'][string];
 
@@ -18,19 +18,25 @@ const yesNo = (text: string, factKey: string, why?: string, askIf?: Condition): 
   askIf,
 });
 
+/** Long-term conditions and regular medicines. Asked only when the answer could change the advice, and never when the profile already says. */
+const history = (text: string, factKey: string, why: string): QuestionInput => ({ ...yesNo(text, factKey, why), purpose: 'history' });
+
 /**
  * One multi-select per concern for the signs that change what the patient
- * should do next. Signs the patient already confirmed or ruled out are hidden
- * when the question is shown, so it never repeats what they told Nora.
+ * should do next. Signs the patient already answered are hidden when the
+ * question is shown, so it never repeats what they told Nora. "Not sure"
+ * keeps every sign open as unknown, which Nora treats with caution.
  */
 const warningSigns = (text: string, why: string, options: [factKey: string, label: string][]): QuestionInput => ({
   text,
   why,
+  purpose: 'safety',
   type: 'multi',
   allowSkip: true,
   options: [
     ...options.map(([factKey, label]) => ({ value: factKey, label, factKey, exclusive: false })),
     { value: 'none', label: 'None of these', exclusive: true },
+    { value: 'unsure', label: 'Not sure', exclusive: true, unsure: true },
   ],
 });
 
@@ -41,7 +47,7 @@ const concerns: BundleInput['concerns'] = [
     triggers: ['sore_throat'],
     specialty: 'General Physician',
     defaultLevel: 'self_care',
-    questions: ['q_ws_throat', 'q_duration', 'q_fever', 'q_temperature', 'q_cough', 'q_swollen_glands', 'q_difficulty_swallowing', 'q_runny_nose'],
+    questions: ['q_ws_throat', 'q_duration', 'q_fever', 'q_temperature', 'q_immuno', 'q_diabetes', 'q_cough', 'q_swollen_glands', 'q_tonsil_pus', 'q_difficulty_swallowing', 'q_runny_nose'],
     requiredFacts: ['duration_days', 'fever', 'difficulty_swallowing', 'drooling'],
     explanations: [
       {
@@ -58,7 +64,7 @@ const concerns: BundleInput['concerns'] = [
         label: 'Possible bacterial throat infection',
         plain: 'Some throat infections are caused by bacteria (such as strep). A clinician can check whether treatment is needed.',
         clinical: 'Possible streptococcal pharyngitis (Centor features)',
-        supportingFacts: ['fever', 'swollen_glands'],
+        supportingFacts: ['fever', 'swollen_glands', 'tonsil_pus'],
         againstFacts: ['cough', 'runny_nose'],
         sourceKeys: ['src_sore_throat'],
       },
@@ -72,8 +78,8 @@ const concerns: BundleInput['concerns'] = [
     triggers: ['headache'],
     specialty: 'General Physician',
     defaultLevel: 'self_care',
-    questions: ['q_ws_headache', 'q_duration', 'q_fever', 'q_rash', 'q_vision_change', 'q_nausea', 'q_light_sensitivity', 'q_pain_score'],
-    requiredFacts: ['headache_sudden_severe', 'stiff_neck', 'fever'],
+    questions: ['q_ws_headache', 'q_blood_thinners', 'q_duration', 'q_fever', 'q_rash', 'q_vision_change', 'q_one_side', 'q_nausea', 'q_light_sensitivity', 'q_pain_score'],
+    requiredFacts: ['headache_sudden_severe', 'stiff_neck', 'fever', 'head_injury'],
     explanations: [
       {
         code: 'tension_headache',
@@ -81,7 +87,7 @@ const concerns: BundleInput['concerns'] = [
         plain: 'A pressing or tight headache, often linked to stress, poor sleep, posture or screen time.',
         clinical: 'Tension-type headache',
         supportingFacts: [],
-        againstFacts: ['nausea', 'light_sensitivity', 'vision_change'],
+        againstFacts: ['nausea', 'light_sensitivity', 'vision_change', 'headache_one_side'],
         sourceKeys: ['src_headache'],
       },
       {
@@ -89,7 +95,7 @@ const concerns: BundleInput['concerns'] = [
         label: 'Migraine',
         plain: 'A throbbing headache that can come with feeling sick, sensitivity to light, or visual changes.',
         clinical: 'Migraine (with or without aura)',
-        supportingFacts: ['nausea', 'light_sensitivity', 'vision_change'],
+        supportingFacts: ['nausea', 'light_sensitivity', 'vision_change', 'headache_one_side'],
         againstFacts: [],
         sourceKeys: ['src_headache'],
       },
@@ -103,7 +109,7 @@ const concerns: BundleInput['concerns'] = [
     triggers: ['dysuria', 'urinary_frequency'],
     specialty: 'General Physician',
     defaultLevel: 'soon',
-    questions: ['q_ws_urinary', 'q_duration', 'q_dysuria', 'q_frequency', 'q_temperature'],
+    questions: ['q_ws_urinary', 'q_duration', 'q_dysuria', 'q_frequency', 'q_temperature', 'q_immuno', 'q_diabetes'],
     requiredFacts: ['fever', 'flank_pain'],
     explanations: [
       {
@@ -118,7 +124,7 @@ const concerns: BundleInput['concerns'] = [
       {
         code: 'upper_uti',
         label: 'Possible kidney infection',
-        plain: 'An infection that has spread to the kidneys, which can cause fever, side pain and vomiting. This needs same-day care.',
+        plain: 'An infection that has spread to the kidneys, which can cause fever, side pain and vomiting.',
         clinical: 'Possible pyelonephritis',
         supportingFacts: ['fever', 'flank_pain', 'vomiting'],
         againstFacts: [],
@@ -134,7 +140,7 @@ const concerns: BundleInput['concerns'] = [
     triggers: ['cough'],
     specialty: 'General Physician',
     defaultLevel: 'self_care',
-    questions: ['q_ws_cough', 'q_duration', 'q_productive', 'q_fever', 'q_temperature', 'q_runny_nose'],
+    questions: ['q_ws_cough', 'q_duration', 'q_productive', 'q_fever', 'q_temperature', 'q_lung_disease', 'q_immuno', 'q_diabetes', 'q_runny_nose'],
     requiredFacts: ['duration_days', 'cough_blood', 'breathless'],
     explanations: [
       {
@@ -165,7 +171,7 @@ const concerns: BundleInput['concerns'] = [
     triggers: ['back_pain'],
     specialty: 'Orthopaedics',
     defaultLevel: 'self_care',
-    questions: ['q_ws_back', 'q_duration', 'q_back_trauma', 'q_leg_pain', 'q_pain_score'],
+    questions: ['q_ws_back', 'q_duration', 'q_back_trauma', 'q_immuno', 'q_leg_pain', 'q_pain_score'],
     requiredFacts: ['saddle_numbness', 'bladder_bowel_change', 'leg_weakness'],
     explanations: [
       {
@@ -196,7 +202,7 @@ const concerns: BundleInput['concerns'] = [
     triggers: ['abdominal_pain'],
     specialty: 'General Physician',
     defaultLevel: 'routine',
-    questions: ['q_ws_abdo', 'q_duration', 'q_right_lower', 'q_fever', 'q_vomiting', 'q_diarrhoea'],
+    questions: ['q_ws_abdo', 'q_duration', 'q_right_lower', 'q_fever', 'q_vomiting', 'q_diabetes', 'q_diarrhoea', 'q_upper_burning'],
     requiredFacts: ['abdominal_pain_severe', 'blood_vomit', 'black_stool'],
     explanations: [
       {
@@ -213,14 +219,14 @@ const concerns: BundleInput['concerns'] = [
         label: 'Indigestion or acidity',
         plain: 'Burning or discomfort in the upper tummy, often related to meals, spicy food or stress.',
         clinical: 'Dyspepsia / gastritis',
-        supportingFacts: ['nausea'],
+        supportingFacts: ['nausea', 'upper_burning'],
         againstFacts: ['fever', 'diarrhoea'],
         sourceKeys: ['src_abdominal'],
       },
       {
         code: 'possible_appendicitis',
         label: 'Possible appendicitis — needs examination',
-        plain: 'Pain that settles in the lower right tummy with fever can be appendicitis, which needs a doctor to examine you today.',
+        plain: 'Pain that settles in the lower right tummy with fever can be appendicitis, which a doctor needs to examine.',
         clinical: 'Possible acute appendicitis',
         supportingFacts: ['right_lower_pain', 'fever', 'abdominal_pain_severe'],
         againstFacts: ['diarrhoea'],
@@ -236,7 +242,7 @@ const concerns: BundleInput['concerns'] = [
     triggers: ['rash'],
     specialty: 'Dermatology',
     defaultLevel: 'self_care',
-    questions: ['q_ws_rash', 'q_duration', 'q_rash_itchy', 'q_fever', 'q_rash_spreading', 'q_new_exposure'],
+    questions: ['q_ws_rash', 'q_duration', 'q_rash_itchy', 'q_fever', 'q_immuno', 'q_rash_spreading', 'q_new_exposure'],
     requiredFacts: ['lip_throat_swelling', 'rash_blisters', 'fever'],
     explanations: [
       {
@@ -276,7 +282,7 @@ const concerns: BundleInput['concerns'] = [
     triggers: ['ear_pain'],
     specialty: 'ENT',
     defaultLevel: 'self_care',
-    questions: ['q_ws_ear', 'q_duration', 'q_fever', 'q_ear_discharge', 'q_hearing_loss', 'q_runny_nose', 'q_pain_score'],
+    questions: ['q_ws_ear', 'q_duration', 'q_fever', 'q_immuno', 'q_ear_discharge', 'q_hearing_loss', 'q_runny_nose', 'q_pain_score'],
     requiredFacts: ['ear_swelling_behind', 'fever'],
     explanations: [
       {
@@ -307,7 +313,7 @@ const concerns: BundleInput['concerns'] = [
     triggers: ['dizziness'],
     specialty: 'General Physician',
     defaultLevel: 'routine',
-    questions: ['q_ws_dizzy', 'q_duration', 'q_room_spinning', 'q_dizzy_standing', 'q_vomiting', 'q_hearing_loss'],
+    questions: ['q_ws_dizzy', 'q_duration', 'q_heart_disease', 'q_room_spinning', 'q_dizzy_standing', 'q_vomiting', 'q_diabetes', 'q_hearing_loss'],
     requiredFacts: ['stroke_signs', 'chest_pain', 'fainted'],
     explanations: [
       {
@@ -339,7 +345,7 @@ const concerns: BundleInput['concerns'] = [
     onlyAlone: true,
     specialty: 'General Physician',
     defaultLevel: 'self_care',
-    questions: ['q_ws_cold', 'q_duration', 'q_fever', 'q_temperature', 'q_body_aches'],
+    questions: ['q_ws_cold', 'q_duration', 'q_fever', 'q_temperature', 'q_lung_disease', 'q_heart_disease', 'q_diabetes', 'q_immuno', 'q_body_aches'],
     requiredFacts: ['duration_days', 'breathless', 'fever'],
     explanations: [
       {
@@ -371,7 +377,7 @@ const concerns: BundleInput['concerns'] = [
     onlyAlone: true,
     specialty: 'General Physician',
     defaultLevel: 'self_care',
-    questions: ['q_ws_gastro', 'q_duration', 'q_fever', 'q_diarrhoea', 'q_vomiting', 'q_abdo_pain'],
+    questions: ['q_ws_gastro', 'q_duration', 'q_fever', 'q_diarrhoea', 'q_vomiting', 'q_diabetes', 'q_immuno', 'q_abdo_pain'],
     requiredFacts: ['cannot_keep_fluids', 'dehydration_signs', 'blood_in_stool'],
     explanations: [
       {
@@ -403,7 +409,7 @@ const concerns: BundleInput['concerns'] = [
     onlyAlone: true,
     specialty: 'General Physician',
     defaultLevel: 'self_care',
-    questions: ['q_ws_fever', 'q_duration', 'q_temperature', 'q_body_aches', 'q_cough', 'q_runny_nose', 'q_dysuria', 'q_rash_any'],
+    questions: ['q_ws_fever', 'q_duration', 'q_temperature', 'q_immuno', 'q_body_aches', 'q_cough', 'q_runny_nose', 'q_dysuria', 'q_rash_any'],
     requiredFacts: ['duration_days', 'confusion', 'stiff_neck'],
     explanations: [
       {
@@ -440,20 +446,44 @@ const demoBundleInput: BundleInput = {
     disclaimer:
       'Nora gives health information, not a diagnosis. This demo uses synthetic content that has not been clinically validated.',
     ageMin: 18,
-    maxTurns: 12,
     recurrenceDays: 30,
   },
 
   facts: {
-    age: { label: 'Age', type: 'number', unit: 'years', synonyms: [], critical: true },
-    pregnant: { label: 'Pregnant', type: 'boolean', synonyms: ['pregnant', 'expecting a baby'], critical: false },
+    age: { label: 'Age', type: 'number', unit: 'years', synonyms: [], critical: true, kind: 'context' },
+    pregnant: { label: 'Pregnant', type: 'boolean', synonyms: ['pregnant', 'expecting a baby'], critical: false, kind: 'context' },
+    diabetes: { label: 'Diabetes', type: 'boolean', synonyms: ['diabetes', 'diabetic', 'type 1 diabetes', 'type 2 diabetes', 'high blood sugar'], kind: 'history' },
+    immunocompromised: {
+      label: 'Weakened immune system',
+      type: 'boolean',
+      synonyms: ['weak immune system', 'weakened immune system', 'immunocompromised', 'immunosuppressed', 'chemotherapy', 'on chemo', 'hiv', 'organ transplant', 'long-term steroids', 'prednisolone', 'methotrexate', 'tacrolimus'],
+      kind: 'history',
+    },
+    chronic_lung_disease: { label: 'Long-term lung condition (such as asthma or COPD)', type: 'boolean', synonyms: ['asthma', 'asthmatic', 'copd', 'emphysema', 'chronic bronchitis', 'bronchiectasis'], kind: 'history' },
+    heart_disease: { label: 'Heart condition', type: 'boolean', synonyms: ['heart disease', 'heart condition', 'heart failure', 'angina', 'heart stent', 'irregular heart rhythm', 'atrial fibrillation'], kind: 'history' },
+    blood_thinners: {
+      label: 'Takes blood-thinning medicine',
+      type: 'boolean',
+      synonyms: ['blood thinner', 'blood thinners', 'warfarin', 'acenocoumarol', 'apixaban', 'rivaroxaban', 'dabigatran', 'clopidogrel', 'ticagrelor'],
+      kind: 'history',
+    },
+    head_injury: { label: 'Headache started after a blow to the head', type: 'boolean', synonyms: ['hit my head', 'head injury', 'banged my head', 'bumped my head', 'blow to the head'], critical: true },
+    headache_one_side: { label: 'Headache mainly on one side', type: 'boolean', synonyms: ['one side of my head', 'one-sided headache', 'left side of my head', 'right side of my head'] },
+    tonsil_pus: { label: 'White patches or pus on the tonsils', type: 'boolean', synonyms: ['pus on my tonsils', 'white patches', 'white spots on my tonsils', 'tonsils have pus'] },
+    upper_burning: { label: 'Burning pain in the upper tummy', type: 'boolean', synonyms: ['acidity', 'heartburn', 'burning in my stomach', 'burning in my chest after eating', 'acid reflux'] },
     sore_throat: { label: 'Sore throat', type: 'boolean', synonyms: ['sore throat', 'throat pain', 'throat hurts', 'scratchy throat', 'painful throat', 'throat infection'], critical: false },
     fever: { label: 'Fever', type: 'boolean', synonyms: ['fever', 'feverish', 'high temperature', 'chills', 'running a temperature'], critical: false },
     temperature_c: { label: 'Highest temperature', type: 'number', unit: '°C', synonyms: [], critical: false },
     body_aches: { label: 'Body aches', type: 'boolean', synonyms: ['body ache', 'body aches', 'body pain', 'aching all over', 'muscle aches', 'body is aching', 'joint pain'], critical: false },
     flu_like: { label: 'Cold or flu', type: 'boolean', synonyms: ['a cold', 'common cold', 'caught a cold', 'the flu', 'flu'], critical: false },
     cough: { label: 'Cough', type: 'boolean', synonyms: ['cough', 'coughing'], critical: false },
-    cough_productive: { label: 'Cough with phlegm', type: 'boolean', synonyms: ['phlegm', 'mucus', 'sputum', 'wet cough'], critical: false },
+    cough_productive: {
+      label: 'Cough with phlegm',
+      type: 'boolean',
+      synonyms: ['phlegm', 'mucus', 'sputum', 'wet cough', 'chesty cough'],
+      absentSynonyms: ['dry cough', 'tickly cough', 'nothing comes up'],
+      critical: false,
+    },
     cough_blood: { label: 'Coughing up blood', type: 'boolean', synonyms: ['coughing up blood', 'blood in phlegm', 'blood when i cough'], critical: true },
     breathless: { label: 'Getting breathless more easily than usual', type: 'boolean', synonyms: ['short of breath', 'shortness of breath', 'breathless', 'out of breath'], critical: true },
     breathless_severe: { label: 'Severe difficulty breathing', type: 'boolean', synonyms: ["can't breathe", 'cannot breathe', 'struggling to breathe', 'gasping'], critical: true },
@@ -508,7 +538,7 @@ const demoBundleInput: BundleInput = {
     fainted: { label: 'Fainted or passed out', type: 'boolean', synonyms: ['fainted', 'passed out', 'blacked out', 'fainting', 'lost consciousness'], critical: true },
     palpitations: { label: 'Racing, pounding or irregular heartbeat', type: 'boolean', synonyms: ['palpitations', 'heart racing', 'heart is racing', 'pounding heart', 'irregular heartbeat'], critical: true },
     self_harm_thoughts: { label: 'Thoughts of harming yourself', type: 'boolean', synonyms: ['kill myself', 'suicide', 'end my life', 'harm myself', 'self harm'], critical: true },
-    recurrent: { label: 'A similar check in the last 30 days', type: 'boolean', synonyms: [], critical: false },
+    recurrent: { label: 'A similar check in the last 30 days', type: 'boolean', synonyms: [], critical: false, kind: 'context' },
     duration_days: { label: 'How long symptoms have lasted', type: 'number', unit: 'days', synonyms: [], critical: false },
     pain_score: { label: 'Pain severity', type: 'number', unit: '/10', synonyms: [], critical: false },
   },
@@ -572,6 +602,7 @@ const demoBundleInput: BundleInput = {
       ['stroke_signs', 'Face drooping, arm weakness or slurred speech'],
       ['confusion', 'New confusion or extreme drowsiness'],
       ['stiff_neck', 'Stiff neck — can’t touch your chin to your chest'],
+      ['head_injury', 'It started after a blow to your head'],
     ]),
     q_ws_urinary: warningSigns('Along with the urinary symptoms, do you have any of these?', 'These can mean the infection has reached the kidneys, which needs same-day care.', [
       ['fever', 'Fever, chills or shivering'],
@@ -691,6 +722,23 @@ const demoBundleInput: BundleInput = {
     q_hearing_loss: yesNo('Is your hearing muffled or reduced?', 'hearing_loss'),
     q_room_spinning: yesNo('Does it feel like the room is spinning around you?', 'room_spinning'),
     q_dizzy_standing: yesNo('Is it mainly when you stand up or get up quickly?', 'dizzy_on_standing'),
+    q_one_side: yesNo('Is the pain mainly on one side of your head?', 'headache_one_side'),
+    q_tonsil_pus: yesNo('If you look at the back of your throat, can you see white patches or pus on your tonsils?', 'tonsil_pus', 'This can point to a bacterial infection that a doctor may want to test for.'),
+    q_upper_burning: yesNo('Is it a burning pain in the upper tummy, often after meals?', 'upper_burning'),
+
+    q_immuno: history(
+      'Do you have a condition or treatment that weakens your immune system, such as chemotherapy, long-term steroids, HIV or an organ transplant?',
+      'immunocompromised',
+      'Infections can become serious faster when the immune system is weakened.',
+    ),
+    q_diabetes: history('Do you have diabetes?', 'diabetes', 'Vomiting or infections can upset blood sugar, so people with diabetes may need to be seen sooner.'),
+    q_lung_disease: history('Do you have a long-term lung condition such as asthma or COPD?', 'chronic_lung_disease', 'A chest infection can make a long-term lung condition worse.'),
+    q_heart_disease: history('Do you have a heart condition, such as heart failure, angina or an irregular heartbeat?', 'heart_disease', 'Dizziness can be linked to the heart, so this changes how soon you should be seen.'),
+    q_blood_thinners: history(
+      'Do you take a blood-thinning medicine, such as warfarin, apixaban, rivaroxaban or clopidogrel?',
+      'blood_thinners',
+      'Blood thinners raise the risk of bleeding, so a new headache should be checked sooner.',
+    ),
   },
 
   concerns,
@@ -707,6 +755,9 @@ const demoBundleInput: BundleInput = {
     { id: 'r_drooling', level: 'emergency', when: { fact: 'drooling', is: 'present' }, message: 'Being unable to swallow saliva can mean dangerous throat swelling.', careItems: [], sourceKey: 'src_sore_throat' },
     { id: 'r_gi_bleed', level: 'emergency', when: { any: [{ fact: 'blood_vomit', is: 'present' }, { fact: 'black_stool', is: 'present' }] }, message: 'Vomiting blood or black stools can mean bleeding in the gut.', careItems: [], sourceKey: 'src_abdominal' },
     { id: 'r_abdo_rigid', level: 'emergency', when: { fact: 'abdominal_rigid', is: 'present' }, message: 'A hard, rigid tummy with pain needs emergency assessment.', careItems: [], sourceKey: 'src_abdominal' },
+    { id: 'r_head_injury', level: 'emergency', when: { fact: 'head_injury', is: 'present' }, message: 'A headache after a recent head injury needs emergency assessment.', careItems: [], sourceKey: 'src_headache' },
+    { id: 'r_abdo_severe', level: 'emergency', concerns: ['abdominal_pain', 'gastro'], when: { fact: 'abdominal_pain_severe', is: 'present' }, message: 'A sudden or severe tummy pain, or pain that is worse when you move, needs emergency assessment.', careItems: [], sourceKey: 'src_abdominal' },
+    { id: 'r_diabetes_vomiting_abdo', level: 'emergency', concerns: ['abdominal_pain'], when: { all: [{ fact: 'diabetes', is: 'present' }, { fact: 'vomiting', is: 'present' }] }, message: 'Tummy pain with vomiting when you have diabetes needs emergency assessment.', careItems: [], sourceKey: 'src_abdominal' },
     { id: 'r_cauda_equina', level: 'emergency', when: { any: [{ fact: 'saddle_numbness', is: 'present' }, { fact: 'bladder_bowel_change', is: 'present' }] }, message: 'Numbness around the buttocks or loss of bladder or bowel control with back pain needs emergency care.', careItems: [], sourceKey: 'src_back_pain' },
 
     { id: 'r_pyelonephritis', level: 'urgent', when: { all: [{ fact: 'flank_pain', is: 'present' }, { fact: 'fever', is: 'present' }] }, message: 'Fever with pain in your side can mean a kidney infection.', careItems: [], sourceKey: 'src_urinary' },
@@ -714,6 +765,22 @@ const demoBundleInput: BundleInput = {
     { id: 'r_cough_blood', level: 'urgent', when: { fact: 'cough_blood', is: 'present' }, message: 'Coughing up blood should be checked by a doctor today.', careItems: [], sourceKey: 'src_cough' },
     { id: 'r_breathless', level: 'urgent', when: { fact: 'breathless', is: 'present' }, message: 'Getting short of breath more easily than usual should be checked today.', careItems: [], sourceKey: 'src_cough' },
     { id: 'r_appendicitis', level: 'urgent', when: { any: [{ all: [{ fact: 'right_lower_pain', is: 'present' }, { fact: 'fever', is: 'present' }] }, { fact: 'abdominal_pain_severe', is: 'present' }] }, message: 'Severe tummy pain, or lower-right pain with fever, should be examined today.', careItems: [], sourceKey: 'src_abdominal' },
+    { id: 'r_immuno_throat', level: 'urgent', concerns: ['sore_throat'], when: { any: [{ fact: 'immunocompromised', is: 'present' }, { fact: 'diabetes', is: 'present' }] }, message: 'A sore throat when your immune system is weakened, or you have diabetes, should be checked today.', careItems: [], sourceKey: 'src_sore_throat' },
+    { id: 'r_uti_higher_risk', level: 'urgent', concerns: ['urinary'], when: { any: [{ fact: 'diabetes', is: 'present' }, { fact: 'immunocompromised', is: 'present' }, { fact: 'age', gte: 65 }] }, message: 'Urinary infection symptoms at 65 or over, or with diabetes or a weakened immune system, should be checked today.', careItems: [], sourceKey: 'src_urinary' },
+    {
+      id: 'r_flu_higher_risk',
+      level: 'urgent',
+      concerns: ['cold_flu'],
+      when: {
+        all: [
+          { fact: 'fever', is: 'present' },
+          { any: [{ fact: 'age', gte: 65 }, { fact: 'diabetes', is: 'present' }, { fact: 'heart_disease', is: 'present' }, { fact: 'chronic_lung_disease', is: 'present' }, { fact: 'immunocompromised', is: 'present' }] },
+        ],
+      },
+      message: 'Flu-like illness at 65 or over, or with a long-term condition or weakened immune system, should be checked today.',
+      careItems: [],
+      sourceKey: 'src_cold_flu',
+    },
     { id: 'r_leg_weakness', level: 'urgent', when: { fact: 'leg_weakness', is: 'present' }, message: 'New leg weakness should be examined today.', careItems: [], sourceKey: 'src_back_pain' },
     { id: 'r_fainted', level: 'urgent', when: { fact: 'fainted', is: 'present' }, message: 'Fainting or passing out should be checked by a doctor today.', careItems: [], sourceKey: 'src_dizziness' },
     { id: 'r_palpitations', level: 'urgent', when: { fact: 'palpitations', is: 'present' }, message: 'Dizziness with a racing or irregular heartbeat should be checked today.', careItems: [], sourceKey: 'src_dizziness' },
@@ -721,6 +788,8 @@ const demoBundleInput: BundleInput = {
     { id: 'r_mastoid', level: 'urgent', when: { fact: 'ear_swelling_behind', is: 'present' }, message: 'Painful swelling behind the ear can mean the infection has spread and needs a doctor today.', careItems: [], sourceKey: 'src_ear_pain' },
     { id: 'r_dehydration', level: 'urgent', when: { any: [{ fact: 'cannot_keep_fluids', is: 'present' }, { fact: 'dehydration_signs', is: 'present' }] }, message: 'Not being able to keep fluids down, or signs of dehydration, need a doctor today.', careItems: [], sourceKey: 'src_gastro' },
     { id: 'r_blood_stool', level: 'urgent', when: { fact: 'blood_in_stool', is: 'present' }, message: 'Blood in your stools should be checked by a doctor today.', careItems: [], sourceKey: 'src_gastro' },
+    { id: 'r_immuno_fever', level: 'urgent', when: { all: [{ fact: 'fever', is: 'present' }, { fact: 'immunocompromised', is: 'present' }] }, message: 'A fever when your immune system is weakened can become serious quickly and should be checked today.', careItems: [], sourceKey: 'src_self_care_general' },
+    { id: 'r_back_fever', level: 'urgent', concerns: ['back_pain'], when: { fact: 'fever', is: 'present' }, message: 'Back pain with a fever can mean an infection and should be checked today.', careItems: [], sourceKey: 'src_back_pain' },
 
     { id: 'r_strep_features', level: 'soon', concerns: ['sore_throat'], when: { all: [{ fact: 'fever', is: 'present' }, { fact: 'swollen_glands', is: 'present' }, { fact: 'cough', is: 'absent' }] }, message: 'Fever with swollen glands and no cough can suggest a bacterial throat infection.', careItems: [], sourceKey: 'src_sore_throat' },
     { id: 'r_swallowing', level: 'soon', when: { fact: 'difficulty_swallowing', is: 'present' }, message: 'Difficulty swallowing should be checked by a doctor.', careItems: [], sourceKey: 'src_sore_throat' },
@@ -736,6 +805,12 @@ const demoBundleInput: BundleInput = {
     { id: 'r_diarrhoea_long', level: 'soon', concerns: ['gastro', 'abdominal_pain'], when: { fact: 'duration_days', gte: 7 }, message: 'Diarrhoea or vomiting lasting a week or more should be checked.', careItems: [], sourceKey: 'src_gastro' },
     { id: 'r_persistent_fever', level: 'soon', when: { all: [{ fact: 'fever', is: 'present' }, { fact: 'duration_days', gte: 5 }] }, message: 'A fever lasting five days or more should be checked.', careItems: [], sourceKey: 'src_self_care_general' },
     { id: 'r_severe_pain', level: 'soon', when: { fact: 'pain_score', gte: 8 }, message: 'Pain this severe should be reviewed by a doctor.', careItems: [], sourceKey: 'src_self_care_general' },
+    { id: 'r_headache_thinners', level: 'soon', concerns: ['headache'], when: { fact: 'blood_thinners', is: 'present' }, message: 'A new headache while taking blood-thinning medicine should be checked by a doctor.', careItems: [], sourceKey: 'src_headache' },
+    { id: 'r_older_fever', level: 'soon', when: { all: [{ fact: 'fever', is: 'present' }, { fact: 'age', gte: 65 }] }, message: 'At 65 or over, a fever should be checked by a doctor.', careItems: [], sourceKey: 'src_self_care_general' },
+    { id: 'r_chronic_lung', level: 'soon', concerns: ['cough', 'cold_flu'], when: { all: [{ fact: 'chronic_lung_disease', is: 'present' }, { any: [{ fact: 'fever', is: 'present' }, { fact: 'cough_productive', is: 'present' }] }] }, message: 'With a long-term lung condition, a chest infection should be checked by a doctor.', careItems: [], sourceKey: 'src_cough' },
+    { id: 'r_cough_higher_risk', level: 'routine', concerns: ['cough'], when: { any: [{ fact: 'immunocompromised', is: 'present' }, { fact: 'diabetes', is: 'present' }] }, message: 'A cough when your immune system is weakened, or you have diabetes, is worth checking with a doctor.', careItems: [], sourceKey: 'src_cough' },
+    { id: 'r_dizzy_heart', level: 'soon', concerns: ['dizziness'], when: { fact: 'heart_disease', is: 'present' }, message: 'Dizziness with a heart condition should be checked by a doctor.', careItems: [], sourceKey: 'src_dizziness' },
+    { id: 'r_diabetes_vomiting', level: 'soon', when: { all: [{ fact: 'diabetes', is: 'present' }, { fact: 'vomiting', is: 'present' }] }, message: 'Vomiting with diabetes can upset your blood sugar and should be checked by a doctor.', careItems: [], sourceKey: 'src_gastro' },
     { id: 'r_prolonged', level: 'routine', when: { fact: 'duration_days', gte: 14 }, message: 'Symptoms lasting two weeks or more are worth discussing with a doctor.', careItems: [], sourceKey: 'src_self_care_general' },
     { id: 'r_recurrent', level: 'routine', when: { fact: 'recurrent', is: 'present' }, message: 'You checked a similar problem recently. Symptoms that keep coming back are worth discussing with a doctor.', careItems: [], sourceKey: 'src_self_care_general' },
   ],
@@ -810,6 +885,17 @@ const demoBundleInput: BundleInput = {
     { id: 's_blisters', description: 'Rash with blistering skin', concern: 'skin_rash', age: 41, facts: { rash: 'PRESENT', rash_blisters: 'PRESENT' }, expectedLevel: 'urgent', critical: true },
     { id: 's_mastoid', description: 'Ear pain with swelling behind the ear', concern: 'ear_pain', age: 28, facts: { ear_pain: 'PRESENT', ear_swelling_behind: 'PRESENT' }, expectedLevel: 'urgent', critical: true },
     { id: 's_dehydration', description: 'Vomiting and unable to keep fluids down', concern: 'gastro', age: 39, facts: { vomiting: 'PRESENT', cannot_keep_fluids: 'PRESENT' }, expectedLevel: 'urgent', critical: true },
+    { id: 's_head_injury_thinners', description: 'Headache after a head injury on warfarin', concern: 'headache', age: 72, facts: { headache: 'PRESENT', head_injury: 'PRESENT', blood_thinners: 'PRESENT' }, expectedLevel: 'emergency', critical: true },
+    { id: 's_head_injury', description: 'Headache after a blow to the head', concern: 'headache', age: 30, facts: { headache: 'PRESENT', head_injury: 'PRESENT' }, expectedLevel: 'emergency', critical: true },
+    { id: 's_abdo_severe', description: 'Sudden severe tummy pain', concern: 'abdominal_pain', age: 40, facts: { abdominal_pain: 'PRESENT', abdominal_pain_severe: 'PRESENT' }, expectedLevel: 'emergency', critical: true },
+    { id: 's_abdo_diabetes_vomiting', description: 'Tummy pain and vomiting with diabetes', concern: 'abdominal_pain', age: 55, facts: { abdominal_pain: 'PRESENT', vomiting: 'PRESENT', diabetes: 'PRESENT' }, expectedLevel: 'emergency', critical: true },
+    { id: 's_throat_immuno', description: 'Sore throat during chemotherapy, no fever', concern: 'sore_throat', age: 50, facts: { sore_throat: 'PRESENT', immunocompromised: 'PRESENT', fever: 'ABSENT' }, expectedLevel: 'urgent', critical: true },
+    { id: 's_uti_diabetes', description: 'Cystitis symptoms with diabetes', concern: 'urinary', age: 45, facts: { dysuria: 'PRESENT', diabetes: 'PRESENT', fever: 'ABSENT', flank_pain: 'ABSENT' }, expectedLevel: 'urgent', critical: true },
+    { id: 's_flu_older', description: 'Flu-like illness at 70', concern: 'cold_flu', age: 70, facts: { runny_nose: 'PRESENT', fever: 'PRESENT', body_aches: 'PRESENT', duration_days: 2 }, expectedLevel: 'urgent', critical: true },
+    { id: 's_immuno_fever', description: 'Fever during chemotherapy', concern: 'fever', age: 48, facts: { fever: 'PRESENT', immunocompromised: 'PRESENT', duration_days: 1 }, expectedLevel: 'urgent', critical: true },
+    { id: 's_back_fever', description: 'Back pain with fever', concern: 'back_pain', age: 50, facts: { back_pain: 'PRESENT', fever: 'PRESENT' }, expectedLevel: 'urgent', critical: true },
+    { id: 's_lung_cough', description: 'Productive cough with asthma', concern: 'cough', age: 40, facts: { cough: 'PRESENT', cough_productive: 'PRESENT', chronic_lung_disease: 'PRESENT', duration_days: 3 }, expectedLevel: 'soon', critical: false },
+    { id: 's_unsure_warning', description: 'Headache, unsure about warning signs', concern: 'headache', age: 35, facts: { headache: 'PRESENT', stiff_neck: 'UNKNOWN', duration_days: 1 }, expectedLevel: 'soon', critical: true },
     { id: 's_strep', description: 'Sore throat with fever, glands, no cough', concern: 'sore_throat', age: 27, facts: { sore_throat: 'PRESENT', fever: 'PRESENT', swollen_glands: 'PRESENT', cough: 'ABSENT', duration_days: 3 }, expectedLevel: 'soon', critical: false },
     { id: 's_simple_uti', description: 'Simple cystitis', concern: 'urinary', age: 34, facts: { dysuria: 'PRESENT', urinary_frequency: 'PRESENT', fever: 'ABSENT', flank_pain: 'ABSENT' }, expectedLevel: 'soon', critical: false },
     { id: 's_dengue_window', description: 'Fever for four days', concern: 'fever', age: 30, facts: { fever: 'PRESENT', duration_days: 4, body_aches: 'PRESENT' }, expectedLevel: 'urgent', critical: false },

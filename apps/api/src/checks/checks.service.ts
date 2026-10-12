@@ -1,7 +1,8 @@
 import { HttpStatus, Injectable } from '@nestjs/common';
 import type { AuthPrincipal } from '../auth/auth.types.js';
-import type { QuestionDef } from '../clinical/bundle.schema.js';
-import { type FactMap, presentQuestion } from '../clinical/rules-engine.js';
+import type { BundleContent, QuestionDef } from '../clinical/bundle.schema.js';
+import { historyFacts, type ProfileList } from '../memory/history-facts.js';
+import { detectConcerns, type FactMap, planQuestions, presentQuestion, QUESTION_REASON_TEXT } from '../clinical/rules-engine.js';
 import { AppException } from '../common/app.exception.js';
 import { ConsentService } from '../consent/consent.service.js';
 import { Prisma } from '../generated/prisma/client.js';
@@ -9,6 +10,7 @@ import { PrismaService } from '../prisma/prisma.service.js';
 import type { ResultContent } from '../assessment/result.types.js';
 import { type AnswerValue, InvalidAnswerError, mapAnswer } from './answer-mapping.js';
 import { CaseStore, type Db } from './case-store.js';
+import { buildDoctorSummary, type DoctorSummary } from './doctor-summary.js';
 
 export const ASSESS_JOB = 'assess';
 
@@ -22,6 +24,10 @@ export interface QuestionView {
   max: number | null;
   allowSkip: boolean;
   options: { value: string; label: string; exclusive: boolean }[];
+  /** Why Nora is asking this now. */
+  reason: string | null;
+  /** What Nora still plans to check after this question; it shrinks or grows with the answers. */
+  stillToCover: string[];
 }
 
 export interface CheckView {
@@ -84,7 +90,7 @@ export class ChecksService {
       throw new AppException(HttpStatus.SERVICE_UNAVAILABLE, 'NO_ACTIVE_BUNDLE', 'Symptom checks are not set up for your organisation yet.');
     }
 
-    const prefill = await this.profileFacts(principal);
+    const prefill = await this.profileFacts(principal, await this.store.bundle(tenant.activeBundleId));
     const session = await this.prisma.$transaction(async (tx) => {
       const created = await tx.assessmentSession.create({
         data: {
@@ -205,7 +211,10 @@ export class ChecksService {
     ]);
     const reviewVisible = !!reviewTask && (!!decision || (await this.consent.hasGranted(principal.tenantId, principal.userId, 'CLINICIAN_SHARING')));
     const defined = session.pendingQuestionId ? bundle.questions[session.pendingQuestionId] : undefined;
-    const q = defined ? presentQuestion(defined, await this.store.facts(this.prisma, id)) : undefined;
+    const facts = defined ? await this.store.facts(this.prisma, id) : {};
+    const q = defined ? presentQuestion(defined, facts) : undefined;
+    const plan = defined ? planQuestions(bundle, facts, detectConcerns(bundle, facts), new Set(await this.store.askedQuestions(this.prisma, id))) : [];
+    const reason = plan.find((p) => p.id === session.pendingQuestionId)?.reason ?? null;
     return {
       id: session.id,
       status: session.status,
@@ -226,6 +235,8 @@ export class ChecksService {
             max: q.max ?? null,
             allowSkip: q.allowSkip,
             options: (q.options ?? []).map((o) => ({ value: o.value, label: o.label, exclusive: o.exclusive })),
+            reason: reason ? QUESTION_REASON_TEXT[reason] : null,
+            stillToCover: [...new Set(plan.filter((p) => p.id !== session.pendingQuestionId).map((p) => QUESTION_REASON_TEXT[p.reason]))],
           }
         : null,
       result: result
@@ -245,6 +256,38 @@ export class ChecksService {
       carePlanDone: acks.map((a) => a.itemId),
       parent,
     };
+  }
+
+  /** A doctor-ready summary of a finished check, built from the saved result and the patient's profile. */
+  async doctorSummary(principal: AuthPrincipal, id: string): Promise<DoctorSummary> {
+    const check = await this.view(principal, id);
+    if (!check.result) {
+      throw new AppException(HttpStatus.CONFLICT, 'SUMMARY_NOT_READY', 'Finish the check first. The summary is available once Nora has given its advice.');
+    }
+    const session = await this.owned(principal, id);
+    const [bundle, profile, user] = await Promise.all([
+      this.store.bundle(session.bundleId),
+      this.prisma.patientProfile.findUnique({ where: { tenantId_userId: { tenantId: principal.tenantId, userId: principal.userId } } }),
+      this.prisma.user.findUnique({ where: { id: principal.userId }, select: { displayName: true } }),
+    ]);
+    const { createdAt: _savedAt, ...result } = check.result;
+    return buildDoctorSummary({
+      checkId: id,
+      createdAt: session.createdAt,
+      patient: {
+        name: user?.displayName ?? null,
+        age: profile?.dateOfBirth ? ageOn(profile.dateOfBirth, session.createdAt) : null,
+        sexAtBirth: profile?.sexAtBirth && profile.sexAtBirth !== 'UNKNOWN' ? profile.sexAtBirth : null,
+      },
+      profile: profile
+        ? { conditions: profile.conditions as ProfileList | null, medications: profile.medications as ProfileList | null, allergies: profile.allergies as ProfileList | null }
+        : null,
+      ownWords: check.messages.filter((m) => m.sender === 'patient' && m.kind === 'text').map((m) => m.text),
+      result,
+      review: check.review,
+      urgencyTitles: Object.fromEntries(Object.entries(bundle.urgencyActions).map(([k, v]) => [k, v.title])),
+      now: new Date(),
+    });
   }
 
   /** Marks a care-plan item done or not done. Purely logistical: urgency and the result are untouched. */
@@ -329,21 +372,22 @@ export class ChecksService {
     return 'ABSENT' as const;
   }
 
-  private async profileFacts(principal: AuthPrincipal): Promise<FactMap> {
+  /** Age, pregnancy and long-term history from the profile; symptoms always start empty for a new consultation. */
+  private async profileFacts(principal: AuthPrincipal, bundle: BundleContent): Promise<FactMap> {
     const profile = await this.prisma.patientProfile.findUnique({
       where: { tenantId_userId: { tenantId: principal.tenantId, userId: principal.userId } },
     });
-    const facts: FactMap = {};
-    if (profile?.dateOfBirth) {
-      const now = new Date();
-      const dob = profile.dateOfBirth;
-      let age = now.getUTCFullYear() - dob.getUTCFullYear();
-      if (now.getUTCMonth() < dob.getUTCMonth() || (now.getUTCMonth() === dob.getUTCMonth() && now.getUTCDate() < dob.getUTCDate())) age -= 1;
-      facts.age = { state: 'PRESENT', value: age, source: 'profile' };
-    }
+    const facts: FactMap = profile ? historyFacts(bundle, profile.conditions as ProfileList | null, profile.medications as ProfileList | null) : {};
+    if (profile?.dateOfBirth) facts.age = { state: 'PRESENT', value: ageOn(profile.dateOfBirth, new Date()), source: 'profile' };
     if (profile?.pregnancyStatus === 'PREGNANT') facts.pregnant = { state: 'PRESENT', source: 'profile' };
     return facts;
   }
+}
+
+function ageOn(dob: Date, on: Date) {
+  let age = on.getUTCFullYear() - dob.getUTCFullYear();
+  if (on.getUTCMonth() < dob.getUTCMonth() || (on.getUTCMonth() === dob.getUTCMonth() && on.getUTCDate() < dob.getUTCDate())) age -= 1;
+  return age;
 }
 
 const TITLE_MAX = 60;

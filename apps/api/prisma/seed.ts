@@ -136,19 +136,32 @@ async function seedKnowledge() {
   const now = new Date();
   const reviewDue = new Date(now.getTime() + 365 * 86_400_000);
   for (const doc of demoKnowledge) {
-    const exists = await prisma.knowledgeDocument.findFirst({ where: { tenantId: null, sourceKey: doc.sourceKey, version: 1 } });
-    if (exists) {
-      await prisma.knowledgeDocument.update({ where: { id: exists.id }, data: { concernCodes: doc.concernCodes } });
+    const latest = await prisma.knowledgeDocument.findFirst({
+      where: { tenantId: null, sourceKey: doc.sourceKey },
+      orderBy: { version: 'desc' },
+      include: { chunks: { orderBy: { ordinal: 'asc' } } },
+    });
+    const unchanged =
+      latest &&
+      latest.title === doc.title &&
+      latest.publisher === doc.publisher &&
+      latest.url === doc.url &&
+      latest.licence === doc.licence &&
+      JSON.stringify(latest.chunks.map((c) => [c.heading, c.text])) === JSON.stringify(doc.chunks.map((c) => [c.heading, c.text]));
+    if (unchanged) {
+      await prisma.knowledgeDocument.update({ where: { id: latest.id }, data: { concernCodes: doc.concernCodes } });
       continue;
     }
+    // Changed content becomes a new version; earlier versions stay so past results can still show what they cited.
     await prisma.knowledgeDocument.create({
       data: {
         sourceKey: doc.sourceKey,
+        version: (latest?.version ?? 0) + 1,
         title: doc.title,
         publisher: doc.publisher,
         jurisdiction: 'IN',
         url: doc.url,
-        licence: 'Synthetic demo content — not for clinical use',
+        licence: doc.licence,
         publishedAt: now,
         reviewedAt: now,
         reviewDueAt: reviewDue,

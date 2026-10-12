@@ -1,5 +1,5 @@
 import type { QuestionDef } from '../clinical/bundle.schema.js';
-import type { FactMap } from '../clinical/rules-engine.js';
+import { type FactMap, quantity } from '../clinical/rules-engine.js';
 
 /** `null` means the patient skipped the question. */
 export type AnswerValue = 'yes' | 'no' | 'unsure' | number | string[] | null;
@@ -36,7 +36,7 @@ export function mapAnswer(q: QuestionDef, value: AnswerValue): MappedAnswer {
       if ((q.min !== undefined && value < q.min) || (q.max !== undefined && value > q.max)) {
         throw new InvalidAnswerError(`Enter a number between ${q.min ?? '-∞'} and ${q.max ?? '∞'}.`);
       }
-      return { facts: { [q.factKey]: { state: 'PRESENT', value, source: 'answer' } }, label: `${value}${q.unit ? ` ${q.unit}` : ''}` };
+      return { facts: { [q.factKey]: { state: 'PRESENT', value, source: 'answer' } }, label: quantity(value, q.unit) };
     }
     case 'multi': {
       const options = q.options ?? [];
@@ -47,9 +47,11 @@ export function mapAnswer(q: QuestionDef, value: AnswerValue): MappedAnswer {
       if (exclusive && chosen.length > 1) throw new InvalidAnswerError(`"${exclusive.label}" cannot be combined with other options.`);
 
       const facts: FactMap = {};
+      const unsure = chosen.some((o) => o.unsure);
       for (const o of options) {
         if (!o.factKey) continue;
-        if (chosen.includes(o)) facts[o.factKey] = { state: 'PRESENT', source: 'answer' };
+        if (unsure) facts[o.factKey] = { state: 'UNKNOWN', source: 'answer' };
+        else if (chosen.includes(o)) facts[o.factKey] = { state: 'PRESENT', source: 'answer' };
         else if (q.unselected !== 'unasked') facts[o.factKey] = { state: 'ABSENT', source: 'answer' };
       }
       return { facts, label: chosen.map((o) => o.label).join(', ') };

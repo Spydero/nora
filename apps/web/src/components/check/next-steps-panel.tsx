@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import type { ReactNode } from "react";
-import { AlertTriangle, CalendarClock, Check, ChevronRight, History, MessageCircleQuestion, Phone, RefreshCw, ShieldCheck } from "lucide-react";
+import { AlertTriangle, CalendarClock, Check, ChevronRight, FileText, History, MessageCircleQuestion, Phone, RefreshCw, ShieldCheck } from "lucide-react";
 import { Button, Card, cn, Panel, StatusBadge } from "@nora/ui";
 import { URGENCY_LABEL } from "@/lib/care";
 import { type CarePlanItem, checksApi, type CheckView, type MemoryItem, TERMINAL } from "@/lib/checks";
@@ -107,6 +107,21 @@ function ResultSteps({ check, controller }: { check: CheckView; controller: Chec
             ))}
           </ul>
         </section>
+      )}
+
+      {finished && (
+        <Card className="flex flex-col gap-2 border-brand-teal">
+          <p className="flex items-center gap-2 font-semibold">
+            <FileText aria-hidden className="size-5 text-brand-teal" />
+            Summary for your doctor
+          </p>
+          <p className="text-secondary text-fg-muted">
+            Your symptoms, history, medicines and Nora’s findings on one page. Check and edit it, then download or print it to take to your appointment.
+          </p>
+          <Link href={`/summary/${check.id}`} className="self-start text-secondary font-medium text-brand-teal underline-offset-2 hover:underline">
+            Open the summary
+          </Link>
+        </Card>
       )}
 
       {finished && (

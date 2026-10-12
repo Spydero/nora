@@ -28,6 +28,8 @@ export interface AnswerConflict {
   mentioned: 'yes' | 'no';
   /** A confirmed answer is kept, except that a warning sign mentioned later is treated as present to be safe. */
   resolution: 'kept_answer' | 'treated_as_present';
+  /** Set when the earlier answer came from the patient's health profile rather than this check. */
+  answeredIn?: 'profile';
 }
 
 export type ResultStatus = 'COMPLETED' | 'INCOMPLETE' | 'ESCALATED' | 'UNSUPPORTED';
@@ -44,7 +46,8 @@ export interface ResultContent {
   };
   summary: string;
   concerns: { code: string; label: string }[];
-  findings: { present: FindingItem[]; absent: FindingItem[]; unknown: FindingItem[] };
+  /** Symptoms in this consultation only; `history` holds long-term conditions and medicines that mattered for it. */
+  findings: { present: FindingItem[]; absent: FindingItem[]; unknown: FindingItem[]; history?: { present: FindingItem[]; absent: FindingItem[]; unknown: FindingItem[] } };
   explanations: {
     code: string;
     label: string;

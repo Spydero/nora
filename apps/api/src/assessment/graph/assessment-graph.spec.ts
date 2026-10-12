@@ -16,18 +16,22 @@ const A = { state: 'ABSENT' as const, source: 'answer' };
 
 const noRedFlags: FactMap = { chest_pain: A, breathless_severe: A, stroke_signs: A, confusion: A, lip_throat_swelling: A, drooling: A };
 
-/** Sore throat with fever, glands and no cough: every question answered, rules say "soon". */
+/** Sore throat with fever, glands and no cough: every question Nora plans is answered, rules say "soon". */
 const strepCase: FactMap = {
   ...noRedFlags,
   sore_throat: P(),
   duration_days: P(3),
   fever: P(),
   temperature_c: P(38.4),
+  immunocompromised: A,
+  diabetes: A,
   cough: A,
   swollen_glands: P(),
+  tonsil_pus: P(),
   difficulty_swallowing: A,
   runny_nose: A,
 };
+const ALL_ASKED = Object.keys(demoBundle.questions);
 
 function input(facts: FactMap, opts: { message?: string; asked?: string[]; turnCount?: number; age?: number } = {}): AssessmentInput {
   return {
@@ -249,7 +253,7 @@ describe('assessment graph orchestration', () => {
 
   it('marks results incomplete when critical questions were skipped', async () => {
     const { deps } = setup({ ai: false });
-    const out = await runAssessment(deps, input({ ...strepCase, fever: { state: 'UNKNOWN', source: 'answer' }, temperature_c: { state: 'NOT_ASKED' } }, { turnCount: demoBundle.meta.maxTurns }));
+    const out = await runAssessment(deps, input({ ...strepCase, fever: { state: 'UNKNOWN', source: 'answer' }, temperature_c: { state: 'NOT_ASKED' } }, { asked: ALL_ASKED }));
     expect(out.outcome).toBe('INCOMPLETE');
     expect(out.result!.missingInformation.map((m) => m.key)).toContain('fever');
   });
@@ -301,15 +305,66 @@ describe('assessment graph orchestration', () => {
       expect(out.result!.verification.issues.join(' ')).toMatch(/without citing a memory item|"metformin"/);
       expect(out.result!.summary).not.toMatch(/metformin|diabetes/);
     });
+
+    const unrelated: MemoryItem = { id: 'M4', kind: 'past_check', label: 'Earlier check', text: '1 Oct 2026 — Headache with a stiff neck.', recordedAt: '2026-10-01T09:00:00Z', href: '/history', checkId: 'c9', concernCode: 'headache' };
+
+    it('keeps an unrelated earlier check out of the AI’s view and the result', async () => {
+      const { chat, deps } = setup({ chat: [new AIMessage('ok')], drafts: [goodDraft], decisions: [ranking] });
+      const out = await runAssessment(deps, withMemory(strepCase, [...memory, unrelated]));
+      const sent = JSON.stringify([chat.calls, chat.structuredCalls]);
+      expect(sent).toContain('thisConsultation');
+      expect(sent).not.toMatch(/stiff neck/i);
+      expect(out.result!.memory!.map((m) => m.id)).not.toContain('M4');
+      expect(out.result!.findings.present.map((f) => f.key)).not.toContain('stiff_neck');
+    });
+
+    it('rejects a draft that presents a symptom from an earlier check as current', async () => {
+      const contaminated = { ...goodDraft, summary: 'You have a sore throat with fever, swollen glands and a stiff neck. A clinician should check this within the next 24–48 hours.' };
+      const { chat, deps } = setup({ chat: [new AIMessage('ok')], drafts: [contaminated, goodDraft], decisions: [ranking] });
+      const out = await runAssessment(deps, withMemory(strepCase, [...memory, unrelated]));
+      expect(JSON.stringify(chat.structuredCalls[1]!.input)).toContain('haven\'t told Nora about in this check');
+      expect(out.result!.summary).not.toMatch(/stiff neck/i);
+    });
+  });
+
+  it('escalates when an emergency sign is described part-way through the questions', async () => {
+    const partial: FactMap = { sore_throat: P(), duration_days: P(2), fever: A };
+    const out = await runAssessment(setup({ ai: false }).deps, input(partial, { asked: ['q_ws_throat', 'q_fever'], message: 'my lips and tongue are swelling up now' }));
+    expect(out.outcome).toBe('ESCALATED');
+    expect(out.result!.carePlan[0]!.id).toBe('ci_call_112');
+  });
+
+  it('finishes with the warning sign recorded as unresolved when the patient is not sure', async () => {
+    const out = await runAssessment(setup({ ai: false }).deps, input({ ...strepCase, drooling: { state: 'UNKNOWN', source: 'answer' } }, { asked: ALL_ASKED }));
+    expect(out.outcome).toBe('INCOMPLETE');
+    expect(out.result!.urgency.reasons.map((r) => r.ruleId)).toContain('unresolved_safety');
+    expect(out.result!.missingInformation.map((m) => m.key)).toContain('drooling');
+    expect(out.result!.limitations.join(' ')).toMatch(/weren’t sure/);
   });
 
   describe('safety over AI conclusions', () => {
-    const viralCase: FactMap = { ...noRedFlags, sore_throat: P(), runny_nose: P(), cough: P(), fever: A, duration_days: P(2), difficulty_swallowing: A, swollen_glands: A };
+    const viralCase: FactMap = {
+      ...noRedFlags,
+      sore_throat: P(),
+      runny_nose: P(),
+      cough: P(),
+      fever: A,
+      duration_days: P(2),
+      difficulty_swallowing: A,
+      swollen_glands: A,
+      tonsil_pus: A,
+      breathless: A,
+      cough_blood: A,
+      cough_productive: A,
+      chronic_lung_disease: A,
+      immunocompromised: A,
+      diabetes: A,
+    };
     const unsafe = { ...goodDraft, summary: 'You have strep throat. Take 500 mg amoxicillin twice a day.' };
 
     it('does not fall back to self-care when the AI explanation fails verification', async () => {
       const { deps } = setup({ chat: [new AIMessage('ok')], drafts: [unsafe, unsafe], decisions: [ranking] });
-      const out = await runAssessment(deps, input(viralCase, { turnCount: demoBundle.meta.maxTurns }));
+      const out = await runAssessment(deps, input(viralCase));
       const r = out.result!;
       expect(r.generator).toBe('template_fallback');
       expect(r.urgency.level).toBe('routine');
@@ -321,7 +376,7 @@ describe('assessment graph orchestration', () => {
 
     it('keeps self-care when the AI is simply unavailable, and fails over on drafting errors', async () => {
       const { deps } = setup({ chat: [new AIMessage('ok')], drafts: [new Error('503 overloaded'), new Error('503 overloaded')], decisions: [ranking] });
-      const out = await runAssessment(deps, input(viralCase, { turnCount: demoBundle.meta.maxTurns }));
+      const out = await runAssessment(deps, input(viralCase));
       expect(out.result!.generator).toBe('template_fallback');
       expect(out.result!.urgency.level).toBe('self_care');
       expect(out.aiErrors.join(' ')).toMatch(/draft: 503/);

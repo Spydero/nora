@@ -62,16 +62,17 @@ export function validateObservations(bundle: BundleContent, message: string, raw
   for (const o of raw) {
     const def = bundle.facts[o.factKey];
     if (!def || !o.quote.trim() || !haystack.includes(normalise(o.quote))) continue;
-    if (o.assertion !== 'affirmed' && o.assertion !== 'negated') continue;
-    const state = o.assertion === 'negated' ? 'ABSENT' : 'PRESENT';
+    const assertion = o.assertion === 'historical' && def.kind === 'history' ? 'affirmed' : o.assertion;
+    if (assertion !== 'affirmed' && assertion !== 'negated') continue;
+    const state = assertion === 'negated' ? 'ABSENT' : 'PRESENT';
     if (state === 'ABSENT' && def.critical && ![def.label, ...def.synonyms].some((t) => normalise(o.quote).includes(normalise(t)))) continue;
     if (def.type === 'number') {
       if (state !== 'PRESENT' || o.value === null || !Number.isFinite(o.value)) continue;
       const { min, max } = numberRange(bundle, o.factKey);
       if (o.value < min || o.value > max || !numberGrounded(o.value, o.quote, def.unit)) continue;
-      out.push({ factKey: o.factKey, state, value: o.value, quote: o.quote, assertion: o.assertion, source: 'llm' });
+      out.push({ factKey: o.factKey, state, value: o.value, quote: o.quote, assertion, source: 'llm' });
     } else {
-      out.push({ factKey: o.factKey, state, quote: o.quote, assertion: o.assertion, source: 'llm' });
+      out.push({ factKey: o.factKey, state, quote: o.quote, assertion, source: 'llm' });
     }
   }
   return out;
@@ -84,7 +85,10 @@ export async function extractWithModel(
 ): Promise<{ observations: Observation[]; usage: TokenUsage }> {
   const schema = extractionSchema(bundle);
   const catalogue = Object.entries(bundle.facts)
-    .map(([k, f]) => `- ${k}: ${f.label}${f.unit ? ` (${f.unit})` : ''}`)
+    .map(
+      ([k, f]) =>
+        `- ${k}: ${f.label}${f.unit ? ` (${f.unit})` : ''}${f.kind === 'history' ? ' [history]' : ''}${f.absentSynonyms.length ? ` (negated when the patient says: ${f.absentSynonyms.join(', ')})` : ''}`,
+    )
     .join('\n');
   const runnable = model.withStructuredOutput(schema, { name: 'record_observations', includeRaw: true, method: 'functionCalling' });
   const { parsed, raw } = (await runnable.invoke([
@@ -114,9 +118,10 @@ const CONFIRMED_SOURCES = new Set(['answer', 'profile', 'correction']);
 
 /**
  * A yes/no the patient gave is never changed by reading a later message.
- * Disagreements are reported instead; the one exception is a warning sign
- * they answered "no" to and later describe, which is treated as present to
- * be safe and reported too.
+ * Disagreements are reported instead; the exceptions are a warning sign
+ * they answered "no" to and later describe, and a condition or medicine their
+ * profile doesn't list but their message mentions. Both are treated as present
+ * to be safe and reported too.
  */
 export function guardConfirmed(bundle: BundleContent, facts: FactMap, observations: Observation[]): { observations: Observation[]; conflicts: AnswerConflict[] } {
   const kept: Observation[] = [];
@@ -129,13 +134,15 @@ export function guardConfirmed(bundle: BundleContent, facts: FactMap, observatio
       kept.push(o);
       continue;
     }
-    const safety = def.critical && o.state === 'PRESENT';
+    const fromProfile = current.source === 'profile';
+    const safety = (def.critical || fromProfile) && o.state === 'PRESENT';
     conflicts.push({
       key: o.factKey,
       label: def.label,
       answered: current.state === 'PRESENT' ? 'yes' : 'no',
       mentioned: o.state === 'PRESENT' ? 'yes' : 'no',
       resolution: safety ? 'treated_as_present' : 'kept_answer',
+      ...(fromProfile ? { answeredIn: 'profile' as const } : {}),
     });
     if (safety) kept.push(o);
   }

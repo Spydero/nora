@@ -1,5 +1,5 @@
 import { type BundleContent, type ConcernDef, type UrgencyLevel, maxUrgency, urgencyRank } from '../../clinical/bundle.schema.js';
-import { type FactMap, type TriggeredRule, type UrgencyOutcome, warningLevel } from '../../clinical/rules-engine.js';
+import { type FactMap, quantity, type TriggeredRule, type UrgencyOutcome, warningLevel } from '../../clinical/rules-engine.js';
 import { type MemoryItem, memoryLine } from '../../memory/memory.types.js';
 import type { AnswerConflict, FindingItem, Generator, ResultContent, ResultStatus } from '../result.types.js';
 import { SELF_RESOLVING } from './consistency.js';
@@ -23,31 +23,47 @@ export function concernDefs(bundle: BundleContent, codes: string[]): ConcernDef[
   return bundle.concerns.filter((c) => codes.includes(c.code));
 }
 
-/** Findings are what the patient told Nora in this check; facts derived from memory are reported separately. */
+/**
+ * Findings are what the patient told Nora in this check, as present, absent
+ * or unknown. Long-term history (from the answers or the profile) is kept
+ * apart from the consultation's symptoms; facts derived from memory and
+ * context such as age are not findings.
+ */
 export function findings(bundle: BundleContent, facts: FactMap): ResultContent['findings'] {
   const out: ResultContent['findings'] = { present: [], absent: [], unknown: [] };
+  const history: NonNullable<ResultContent['findings']['history']> = { present: [], absent: [], unknown: [] };
   for (const [key, f] of Object.entries(facts)) {
     const def = bundle.facts[key];
-    if (!def || key === 'age' || f.source === 'memory') continue;
+    if (!def || def.kind === 'context' || key === 'age' || f.source === 'memory') continue;
     const item: FindingItem = { key, label: def.label, source: f.source ?? 'unknown', ...(def.type === 'number' ? { value: f.value ?? null, unit: def.unit } : {}) };
-    if (f.state === 'PRESENT') out.present.push(item);
-    else if (f.state === 'ABSENT') out.absent.push(item);
-    else if (f.state === 'UNKNOWN' || f.state === 'DECLINED') out.unknown.push(item);
+    const into = def.kind === 'history' ? history : out;
+    if (f.state === 'PRESENT') into.present.push(item);
+    else if (f.state === 'ABSENT') into.absent.push(item);
+    else if (f.state === 'UNKNOWN' || f.state === 'DECLINED') into.unknown.push(item);
   }
-  return out;
+  return history.present.length || history.absent.length || history.unknown.length ? { ...out, history } : out;
+}
+
+/**
+ * Records that belong in this consultation: the patient's profile and
+ * appointments, plus earlier checks for the same problem or the check this
+ * one follows up. Unrelated earlier checks are left out so their symptoms
+ * can't leak into a new assessment.
+ */
+export function relevantMemory(memory: MemoryItem[], concerns: string[], parentCheckId?: string | null): MemoryItem[] {
+  return memory.filter((m) => m.kind !== 'past_check' || (!!parentCheckId && m.checkId === parentCheckId) || (!!m.concernCode && concerns.includes(m.concernCode)));
 }
 
 export function caseSummary(bundle: BundleContent, facts: FactMap, concerns: string[], urgency: UrgencyOutcome | null, memory: MemoryItem[]) {
   const f = findings(bundle, facts);
-  const fmt = (i: FindingItem) => (i.value !== undefined && i.value !== null ? `${i.label}: ${i.value}${i.unit ? ` ${i.unit}` : ''}` : i.label);
+  const fmt = (i: FindingItem) => (i.value !== undefined && i.value !== null ? `${i.label}: ${quantity(i.value, i.unit)}` : i.label);
   return {
     age: facts.age?.value ?? null,
     concerns: concernDefs(bundle, concerns).map((c) => ({ code: c.code, label: c.label })),
-    present: f.present.map(fmt),
-    absent: f.absent.map(fmt),
-    unknown: f.unknown.map(fmt),
+    thisConsultation: { present: f.present.map(fmt), absent: f.absent.map(fmt), unknown: f.unknown.map(fmt) },
+    healthBackground: { present: (f.history?.present ?? []).map(fmt), absent: (f.history?.absent ?? []).map(fmt) },
     urgency: urgency ? { level: urgency.level, reasons: urgency.triggered.map((t) => t.message), final: true } : null,
-    memory: memory.map(memoryLine),
+    records: memory.map(memoryLine),
   };
 }
 
@@ -146,7 +162,7 @@ export function templateDraft(
   };
 
   const symptoms = Object.entries(facts)
-    .filter(([k, f]) => f.state === 'PRESENT' && bundle.facts[k]?.type === 'boolean')
+    .filter(([k, f]) => f.state === 'PRESENT' && bundle.facts[k]?.type === 'boolean' && bundle.facts[k]?.kind === 'symptom')
     .map(([k]) => label(k));
   const days = facts.duration_days?.state === 'PRESENT' ? Number(facts.duration_days.value) : null;
   const duration = days === null ? '' : days < 1 ? ' since today' : ` for about ${days} ${days === 1 ? 'day' : 'days'}`;
@@ -242,7 +258,10 @@ export function escalationResult(
   memory: MemoryItem[] = [],
   answerConflicts: AnswerConflict[] = [],
 ): ResultContent {
-  const told = findings(bundle, facts).present.filter((f) => bundle.facts[f.key]?.type === 'boolean').map((f) => f.label.toLowerCase());
+  const f = findings(bundle, facts);
+  const labels = (items: FindingItem[]) => items.filter((x) => bundle.facts[x.key]?.type === 'boolean').map((x) => x.label.toLowerCase());
+  const told = labels(f.present);
+  const background = labels(f.history?.present ?? []);
   return buildResult({
     bundle,
     facts,
@@ -252,7 +271,13 @@ export function escalationResult(
     memory,
     answerConflicts,
     draft: {
-      summary: `${told.length ? `You told Nora about ${listText(told)}. ` : ''}Nora stopped asking questions so you can get help straight away.`,
+      summary: [
+        told.length ? `You told Nora about ${listText(told)}.` : '',
+        background.length ? `Your health profile lists ${listText(background)}.` : '',
+        'Nora stopped asking questions so you can get help straight away.',
+      ]
+        .filter(Boolean)
+        .join(' '),
       explanations: [],
       questionsForClinician: [],
       memoryRefs: [],

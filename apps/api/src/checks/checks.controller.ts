@@ -50,6 +50,11 @@ export class ChecksController {
     return this.checks.view(principal, id);
   }
 
+  @Get(':id/doctor-summary')
+  doctorSummary(@CurrentPrincipal() principal: AuthPrincipal, @Param('id', ParseUUIDPipe) id: string) {
+    return this.checks.doctorSummary(principal, id);
+  }
+
   @Post(':id/messages')
   @HttpCode(HttpStatus.ACCEPTED)
   message(

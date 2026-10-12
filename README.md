@@ -30,11 +30,15 @@
 | **Bounded explanations** | The model may only rank *approved candidate explanations* from the active bundle; it cannot invent diagnoses. |
 | **Every claim is cited** | A read-only research agent retrieves approved passages; drafts are verified so each explanation cites retrieved evidence IDs. |
 | **Verify, retry, fall back** | Drafts with uncited claims, diagnosis or dosing language are rejected and retried, then replaced by approved template content. |
+| **Questions until complete, not a count** | There is no question limit. Nora keeps asking until the concern's warning signs are screened, required facts are known, and nothing left could change the urgency or tell likely causes apart. Questions are ranked by what they could change: warning signs first, then anything that could raise urgency, then required details, then distinguishing features. It skips anything already said in free text, answered earlier or known from the profile, and never repeats a question. |
+| **Not sure is never reassuring** | Every symptom is tracked as present, absent or unknown. A warning sign answered "not sure" or skipped keeps urgency at "see a doctor soon" or higher, is listed as missing, and marks the check incomplete. |
 | **Memory without guesswork** | Nora remembers only what the patient confirmed: profile conditions, medicines and allergies, past checks and upcoming appointments. Memory is built deterministically and given to the model as numbered facts; the verifier rejects any history claim that doesn't cite one. |
+| **Each consultation stands alone** | The patient profile (long-term conditions, regular medicines) is kept apart from this consultation's symptoms. Earlier checks reach the AI only when they're about the same problem or are being followed up. The verifier rejects drafts that describe a symptom the patient hasn't reported in this check. |
+| **Reliable sources** | Guidance passages summarise and link to the NHS, the WHO and India's Ministry of Health (Tele-MANAS). Only the newest approved version of each source is used, and every source links to the original page. |
 | **Survives provider outages** | OpenRouter is primary and Google Gemini takes over automatically on rate limits, quota exhaustion or outages. If every provider fails, patients get approved template guidance and urgency is unaffected. |
 | **Warning signs outrank routine advice** | If a monitoring item's own "get help if…" condition is already true, urgency rises to that level. Any critical warning sign that no rule covers lifts urgency to at least "see a doctor soon". Self-care is removed at urgent and above; at "soon" it's shown only as comfort measures "until you're seen". |
 | **Answers are never silently changed** | Extraction can't overwrite a yes/no the patient gave. If a later message contradicts an answer, Nora keeps the answer and tells the patient. The one exception is a critical sign answered "no" and then described, which is treated as present to be safe. |
-| **Contradictions are caught before display** | The verifier rejects AI summaries that deny something the patient said, assert something they denied, misquote numbers, or use reassuring or "settles on its own" wording when a doctor is needed. Approved explanations that say a condition usually settles get a warning-sign caution at "soon" and above. |
+| **Contradictions are caught before display** | The verifier rejects AI summaries that deny something the patient said, assert something they denied, misquote numbers, or use reassuring or "settles on its own" wording when a doctor is needed. It also rejects wording that's more urgent than the decided level. A final check compares the whole result (summary, explanations and care steps) against its urgency and sends any conflict for clinician review. |
 | **Unverified never means reassuring** | If an AI draft fails verification, the template fallback can't stay at self-care. Urgency floors at "routine" and the check is queued for clinician review. |
 | **Defence in depth** | A deterministic red-flag extractor always runs beside the LLM extractor; a critical finding it sees can never be dropped by the model. |
 | **Tenant isolation & privacy** | Tenant-scoped data access, append-only consent, audit trails, idle timeouts, rotating refresh tokens and CSRF protection. |
@@ -77,6 +81,19 @@
     <td><img src="docs/screenshots/38-warning-sign-caution.png" alt="Stiff neck raises a sore throat to see a doctor soon, with a caution on the viral explanation" /></td>
     <td><img src="docs/screenshots/39-until-youre-seen.png" alt="Care plan with one booking step and self-care shown only as comfort until you're seen" /></td>
     <td></td>
+  </tr>
+</table>
+
+### Adaptive questions and the doctor summary
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/screenshots/42-adaptive-question.png" alt="A follow-up question showing why Nora is asking and what's still to check, with the option to answer in your own words" /></td>
+    <td width="50%"><img src="docs/screenshots/43-health-background.png" alt="Findings separating this consultation's symptoms from the patient's health background" /></td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/41-doctor-summary.png" alt="Editable consultation summary for the doctor with download and print buttons" /></td>
+    <td><img src="docs/screenshots/44-next-steps-summary-link.png" alt="Next steps panel with the Summary for your doctor card" /></td>
   </tr>
 </table>
 
@@ -262,10 +279,31 @@ Gemini has no decision model, so explanations are ranked by the rules instead. P
 
 **Memory.** Before research, Nora builds a numbered list of facts (M1…Mn) from the patient's confirmed profile, recent checks and upcoming appointments. The model may reference these facts but never writes memory. Any claim about the patient's history that doesn't cite a fact is rejected by the verifier. A recent similar check triggers a deterministic recurrence rule.
 
+**Profile versus consultation.** Facts come in three kinds:
+
+- **Symptoms** belong to one consultation only.
+- **History** covers long-term conditions and regular medicines. These are filled from the profile when it names them, and are marked absent when the patient has confirmed both lists are complete.
+- **Context** covers age and recurrence.
+
+The AI gets this consultation's symptoms and the health background as separate lists. Only earlier checks about the same problem, or the one being followed up, are included. If a message contradicts the profile, Nora uses what the patient says now and asks them to update their profile.
+
+**Doctor summary.** `GET /checks/:id/doctor-summary` builds a plain-text consultation summary from confirmed facts only, with these sections:
+
+- the patient's own words;
+- symptoms present, absent and not sure;
+- medical history, medicines and allergies;
+- urgency and reasons, with any clinician correction;
+- possible explanations;
+- questions for the doctor;
+- sources.
+
+At `/summary/:id` the patient can edit any section, download it as text, or print it or save it as a PDF. The summary always notes that the patient may have edited it.
+
 ## Testing
 
 ```bash
-pnpm --filter @nora/api test          # rules engine, extraction, orchestration (scripted model)
+pnpm --filter @nora/api test          # rules engine, extraction, orchestration (scripted model),
+                                      # adaptive questioning, memory separation, doctor summary
 pnpm --filter @nora/brand test        # token contrast + CSS/token sync
 pnpm typecheck && pnpm lint
 ```
@@ -300,6 +338,7 @@ Tokens, typography, layout and accessibility rules live in [`packages/brand`](pa
 - [x] Grounded patient memory, linked follow-up checks, care-plan checklist, plain/medical terms toggle
 - [x] OpenRouter → Gemini failover with quota-aware pausing; platform health for operators
 - [x] Tenant analytics with 7/30/90-day ranges; counts under 5, and any figure that would reveal one, are withheld
+- [x] Completeness-based adaptive questioning with free text at any point; profile kept separate from consultations; NHS/WHO/MoHFW-sourced guidance; editable doctor summary
 - [ ] Server-sent events with `Last-Event-ID` resume; embedding index and vector search
 
 **P1** — voice input, report upload, live scheduling, notifications, clinician-signed guidance, more languages.

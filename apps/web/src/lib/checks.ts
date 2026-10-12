@@ -19,6 +19,10 @@ export interface QuestionView {
   max: number | null;
   allowSkip: boolean;
   options: { value: string; label: string; exclusive: boolean }[];
+  /** Why Nora is asking this now; missing on views from older servers. */
+  reason?: string | null;
+  /** Topics Nora still plans to check; the list changes with each answer. */
+  stillToCover?: string[];
 }
 
 export interface FindingItem {
@@ -53,7 +57,8 @@ export interface CheckResult {
   urgency: { level: UrgencyLevel; title: string; text: string; reasons: { ruleId: string; message: string; citations: string[] }[] };
   summary: string;
   concerns: { code: string; label: string }[];
-  findings: { present: FindingItem[]; absent: FindingItem[]; unknown: FindingItem[] };
+  /** Symptoms in this check; `history` is long-term background (absent on results saved before it existed). */
+  findings: { present: FindingItem[]; absent: FindingItem[]; unknown: FindingItem[]; history?: { present: FindingItem[]; absent: FindingItem[]; unknown: FindingItem[] } };
   explanations: {
     code: string;
     label: string;
@@ -66,7 +71,7 @@ export interface CheckResult {
   }[];
   /** `watch` and `whileWaiting` are missing on results saved before they existed. */
   carePlan: CarePlanItem[];
-  answerConflicts?: { key: string; label: string; answered: "yes" | "no"; mentioned: "yes" | "no"; resolution: "kept_answer" | "treated_as_present" }[];
+  answerConflicts?: { key: string; label: string; answered: "yes" | "no"; mentioned: "yes" | "no"; resolution: "kept_answer" | "treated_as_present"; answeredIn?: "profile" }[];
   questionsForClinician: string[];
   missingInformation: { key: string; label: string }[];
   limitations: string[];
@@ -125,6 +130,13 @@ export interface CheckView {
   parent: { id: string; title: string | null; createdAt: string; urgency: UrgencyLevel | null; urgencyTitle: string | null; summary: string | null } | null;
 }
 
+export interface DoctorSummary {
+  checkId: string;
+  title: string;
+  generatedAt: string;
+  sections: { id: string; heading: string; text: string }[];
+}
+
 export interface CheckEvent {
   sequence: string;
   type: "created" | "queued" | "stage" | "question" | "result" | "error";
@@ -146,6 +158,7 @@ const key = () => crypto.randomUUID();
 export const checksApi = {
   create: (parentId?: string) => api<CheckView>("/checks", { method: "POST", body: { idempotencyKey: key(), ...(parentId ? { parentId } : {}) } }),
   get: (id: string) => api<CheckView>(`/checks/${id}`),
+  doctorSummary: (id: string) => api<DoctorSummary>(`/checks/${id}/doctor-summary`),
   acknowledge: (id: string, itemId: string, done: boolean) => api<CheckView>(`/checks/${id}/care-plan/${encodeURIComponent(itemId)}`, { method: "POST", body: { done } }),
   memory: () => api<{ items: MemoryItem[] }>("/memory"),
   send: (id: string, text: string) => api<CheckView>(`/checks/${id}/messages`, { method: "POST", body: { text, idempotencyKey: key() } }),

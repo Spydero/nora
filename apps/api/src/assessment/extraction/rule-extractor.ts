@@ -121,7 +121,8 @@ export function extractWithRules(bundle: BundleContent, message: string): Observ
         const m = phrasePattern(phrase).exec(clause.text);
         if (!m) continue;
         const at = m.index + m[1]!.length;
-        const assertion = classify(clause.text, at);
+        const classified = classify(clause.text, at);
+        const assertion = classified === 'historical' && def.kind === 'history' ? 'affirmed' : classified;
         const obs: Observation = {
           factKey,
           state: assertion === 'negated' ? 'ABSENT' : 'PRESENT',
@@ -133,6 +134,16 @@ export function extractWithRules(bundle: BundleContent, message: string): Observ
         if (!prev || (prev.assertion !== 'affirmed' && assertion === 'affirmed')) found.set(factKey, obs);
         break;
       }
+    }
+    if (found.has(factKey)) continue;
+    for (const clause of clauses(lower)) {
+      const hit = def.absentSynonyms
+        .map((phrase) => phrasePattern(phrase).exec(clause.text))
+        .find((m): m is RegExpExecArray => m !== null && classify(clause.text, m.index + m[1]!.length) === 'affirmed');
+      if (!hit) continue;
+      const at = hit.index + hit[1]!.length;
+      found.set(factKey, { factKey, state: 'ABSENT', quote: quoteFrom(message, clause.start + at, hit[0].length - hit[1]!.length), assertion: 'negated', source: 'rules' });
+      break;
     }
   }
 

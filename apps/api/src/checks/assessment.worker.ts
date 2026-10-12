@@ -290,6 +290,12 @@ const CONDITION_TERMS = ['diabetes', 'hypertension', 'high blood pressure', 'ast
 export function conflictNotice(c: AnswerConflict): string {
   const answered = c.answered === 'yes' ? 'Yes' : 'No';
   const mentioned = c.mentioned === 'yes' ? 'mentions it' : 'suggests you don’t have it';
+  if (c.answeredIn === 'profile') {
+    const profile = c.answered === 'yes' ? `Your health profile lists “${c.label}”` : `Your health profile doesn’t list “${c.label}”`;
+    return c.resolution === 'treated_as_present'
+      ? `${profile}, but your message ${mentioned}. Nora has used what you said for this check. Please update your profile in Settings if it has changed.`
+      : `${profile}, but your message ${mentioned}. To be safe, Nora has kept what your profile says. Please update your profile in Settings if it has changed.`;
+  }
   return c.resolution === 'treated_as_present'
     ? `Earlier you answered “${answered}” to “${c.label}”, but your message ${mentioned}. Because it can be a warning sign, Nora is treating it as present to be safe.`
     : `Earlier you answered “${answered}” to “${c.label}”, but your message ${mentioned}. Nora has kept your answer. If it has changed, tell your doctor.`;

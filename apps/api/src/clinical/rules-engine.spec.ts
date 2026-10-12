@@ -8,6 +8,7 @@ import {
   type FactMap,
   missingRequiredFacts,
   nextQuestion,
+  planQuestions,
   presentQuestion,
   runSentinels,
 } from './rules-engine.js';
@@ -140,7 +141,7 @@ describe('question selection', () => {
     const concerns = detectConcerns(demoBundle, facts);
     expect(nextQuestion(demoBundle, facts, concerns, new Set())?.id).toBe('q_age');
     expect(nextQuestion(demoBundle, { ...facts, ...adult }, concerns, new Set())?.id).toBe('q_ws_throat');
-    expect(nextQuestion(demoBundle, { ...facts, ...adult }, concerns, new Set(['q_ws_throat']))?.id).toBe('q_duration');
+    expect(nextQuestion(demoBundle, { ...facts, ...adult }, concerns, new Set(['q_ws_throat']))?.id).toBe('q_fever');
   });
 
   it('gives each concern different first questions', () => {
@@ -163,23 +164,26 @@ describe('question selection', () => {
     const facts: FactMap = { ...adult, cough: { state: 'PRESENT' }, chest_pain: { state: 'ABSENT' } };
     const q = nextQuestion(demoBundle, facts, detectConcerns(demoBundle, facts), new Set());
     expect(q?.id).toBe('q_ws_cough');
-    expect(presentQuestion(q!.question, facts).options?.map((o) => o.value)).toEqual(['breathless_severe', 'breathless', 'cough_blood', 'none']);
+    expect(presentQuestion(q!.question, facts).options?.map((o) => o.value)).toEqual(['breathless_severe', 'breathless', 'cough_blood', 'none', 'unsure']);
     const allKnown: FactMap = { ...facts, breathless_severe: { state: 'ABSENT' }, breathless: { state: 'ABSENT' }, cough_blood: { state: 'ABSENT' } };
-    expect(nextQuestion(demoBundle, allKnown, detectConcerns(demoBundle, allKnown), new Set())?.id).toBe('q_duration');
+    const next = planQuestions(demoBundle, allKnown, detectConcerns(demoBundle, allKnown), new Set()).map((p) => p.id);
+    expect(next).not.toContain('q_ws_cough');
+    expect(next[0]).toBe('q_fever');
   });
 
   it('does not re-ask facts the patient already volunteered', () => {
     const facts: FactMap = { ...adult, sore_throat: { state: 'PRESENT' }, duration_days: { state: 'PRESENT', value: 2 }, fever: { state: 'ABSENT' } };
-    const q = nextQuestion(demoBundle, facts, detectConcerns(demoBundle, facts), new Set(['q_ws_throat']));
-    expect(q?.id).toBe('q_cough');
+    const plan = planQuestions(demoBundle, facts, detectConcerns(demoBundle, facts), new Set(['q_ws_throat'])).map((p) => p.id);
+    expect(plan).not.toContain('q_duration');
+    expect(plan).not.toContain('q_fever');
+    expect(plan).toContain('q_cough');
   });
 
   it('asks conditional follow-ups only when their condition holds', () => {
     const base: FactMap = { ...adult, sore_throat: { state: 'PRESENT' }, duration_days: { state: 'PRESENT', value: 2 }, cough: { state: 'ABSENT' }, swollen_glands: { state: 'ABSENT' }, difficulty_swallowing: { state: 'ABSENT' } };
     const asked = new Set(['q_ws_throat']);
-    const noFever = nextQuestion(demoBundle, { ...base, fever: { state: 'ABSENT' } }, detectConcerns(demoBundle, base), asked);
-    expect(noFever?.id).toBe('q_runny_nose');
-    const fever = nextQuestion(demoBundle, { ...base, fever: { state: 'PRESENT' } }, detectConcerns(demoBundle, base), asked);
-    expect(fever?.id).toBe('q_temperature');
+    const plan = (facts: FactMap) => planQuestions(demoBundle, facts, detectConcerns(demoBundle, facts), asked).map((p) => p.id);
+    expect(plan({ ...base, fever: { state: 'ABSENT' } })).not.toContain('q_temperature');
+    expect(plan({ ...base, fever: { state: 'PRESENT' } })[0]).toBe('q_temperature');
   });
 });

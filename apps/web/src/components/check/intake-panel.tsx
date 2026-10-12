@@ -154,6 +154,7 @@ export function IntakePanel({
 
         <div className="mt-auto flex flex-col gap-3 pt-2">
           {asking && <QuestionInput question={asking} busy={busy} onAnswer={(value) => void controller.answer(value)} />}
+          {asking && !finished && <OwnWords key={asking.id} disabled={busy} onSubmit={(text) => controller.send(text)} />}
           {finished ? (
             <div className="flex flex-col gap-2 rounded-card border border-dashed border-line p-4">
               <p className="text-secondary text-fg-muted">This check is finished. To describe something new, start another check.</p>
@@ -172,7 +173,38 @@ export function IntakePanel({
   );
 }
 
-function Composer({ disabled, isFirst, onSubmit }: { disabled: boolean; isFirst: boolean; onSubmit(text: string): Promise<void> }) {
+function OwnWords({ disabled, onSubmit }: { disabled: boolean; onSubmit(text: string): Promise<void> }) {
+  const [open, setOpen] = useState(false);
+  if (!open) {
+    return (
+      <button type="button" disabled={disabled} onClick={() => setOpen(true)} className="self-start text-secondary font-medium text-brand-teal underline-offset-2 hover:underline">
+        Or describe it in your own words
+      </button>
+    );
+  }
+  return (
+    <Composer
+      disabled={disabled}
+      label="Tell Nora in your own words"
+      hint="Nora reads what you write, won’t ask again about anything you’ve already covered, and still checks warning signs."
+      onSubmit={onSubmit}
+    />
+  );
+}
+
+function Composer({
+  disabled,
+  isFirst = false,
+  label,
+  hint,
+  onSubmit,
+}: {
+  disabled: boolean;
+  isFirst?: boolean;
+  label?: string;
+  hint?: string;
+  onSubmit(text: string): Promise<void>;
+}) {
   const [text, setText] = useState("");
 
   async function submit(event: FormEvent) {
@@ -186,8 +218,9 @@ function Composer({ disabled, isFirst, onSubmit }: { disabled: boolean; isFirst:
   return (
     <form className="flex flex-col gap-2" onSubmit={(event) => void submit(event)}>
       <label htmlFor="symptom" className="text-secondary font-medium">
-        {isFirst ? "What would you like help with?" : "Anything else you want to add?"}
+        {label ?? (isFirst ? "What would you like help with?" : "Anything else you want to add?")}
       </label>
+      {hint && <p className="text-meta text-fg-muted">{hint}</p>}
       <textarea
         id="symptom"
         rows={3}

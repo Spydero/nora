@@ -1,5 +1,5 @@
 import { type UrgencyLevel, urgencyRank } from '../../clinical/bundle.schema.js';
-import { type AnswerFacts, answerIssues, urgencyIssues } from './consistency.js';
+import { aboveLevelIssues, type AnswerFacts, answerIssues, urgencyIssues } from './consistency.js';
 
 export interface Draft {
   summary: string;
@@ -109,6 +109,7 @@ export function verifyDraft(draft: Draft, ctx: VerifyContext): string[] {
     if (THIRD_PERSON.some((re) => re.test(t))) issues.push(`Address the patient directly as "you": "${t.slice(0, 80)}"`);
   }
   issues.push(...urgencyIssues(statements, ctx.urgency));
+  issues.push(...aboveLevelIssues(statements, ctx.urgency));
   if (ctx.answers) issues.push(...answerIssues(statements, ctx.answers));
   issues.push(...groundingIssues(draft, texts, ctx));
   return issues;

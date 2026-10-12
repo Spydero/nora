@@ -37,12 +37,23 @@ export const conditionSchema: z.ZodType<Condition> = z.lazy(() =>
   ]),
 );
 
+export const FACT_KINDS = ['symptom', 'history', 'context'] as const;
+export type FactKind = (typeof FACT_KINDS)[number];
+
 const factSchema = z.object({
   label: z.string(),
   type: z.enum(['boolean', 'number']),
   unit: z.string().optional(),
   synonyms: z.array(z.string()).default([]),
+  /** Phrases that on their own say the fact is absent ("dry cough" means no phlegm). */
+  absentSynonyms: z.array(z.string()).default([]),
   critical: z.boolean().default(false),
+  /**
+   * Symptoms belong to one consultation. History facts describe the patient
+   * (long-term conditions, regular medicines) and may be filled from their
+   * profile; context is everything else Nora derives (age, recurrence).
+   */
+  kind: z.enum(FACT_KINDS).default('symptom'),
 });
 
 const optionSchema = z.object({
@@ -51,11 +62,17 @@ const optionSchema = z.object({
   /** For multi-select red-flag style questions: each option maps to its own fact. */
   factKey: z.string().optional(),
   exclusive: z.boolean().default(false),
+  /** "Not sure": records every option's fact as UNKNOWN rather than absent. */
+  unsure: z.boolean().default(false),
 });
+
+export const QUESTION_PURPOSES = ['safety', 'history', 'detail'] as const;
 
 const questionSchema = z.object({
   text: z.string(),
   why: z.string().optional(),
+  /** Safety questions are always asked for their concern; the others only while their answer could still matter. */
+  purpose: z.enum(QUESTION_PURPOSES).default('detail'),
   type: z.enum(['yes_no', 'multi', 'number']),
   factKey: z.string().optional(),
   options: z.array(optionSchema).optional(),
@@ -139,7 +156,6 @@ export const bundleContentSchema = z
       jurisdiction: z.string(),
       disclaimer: z.string(),
       ageMin: z.number().int(),
-      maxTurns: z.number().int().positive(),
       /** A finished check for the same concern within this many days sets the `recurrent` fact. */
       recurrenceDays: z.number().int().positive().default(30),
     }),

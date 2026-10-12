@@ -8,6 +8,12 @@ import type { AnswerValue, QuestionView } from "@/lib/checks";
 export function QuestionInput({ question, busy, onAnswer }: { question: QuestionView; busy: boolean; onAnswer(value: AnswerValue): void }) {
   return (
     <div className="flex flex-col gap-3 rounded-card border border-brand-teal/40 bg-panel p-4">
+      {question.reason && (
+        <p className="self-start rounded-control bg-info-bg px-2 py-0.5 text-meta font-medium text-info">
+          <span className="sr-only">Why Nora is asking: </span>
+          {question.reason}
+        </p>
+      )}
       <p id={`q-${question.id}`} className="text-card-title font-semibold">
         {question.text}
       </p>
@@ -24,6 +30,13 @@ export function QuestionInput({ question, busy, onAnswer }: { question: Question
         <button type="button" disabled={busy} onClick={() => onAnswer(null)} className="self-start text-secondary text-fg-muted underline-offset-2 hover:underline">
           Skip this question
         </button>
+      )}
+      {question.stillToCover && (
+        <p className="border-t border-line pt-2 text-meta text-fg-muted">
+          {question.stillToCover.length > 0
+            ? `Still to check: ${question.stillToCover.join(" · ")}. Nora asks only what your answers make relevant, so this can change.`
+            : "This is the last thing Nora needs to check, unless your answer raises something new."}
+        </p>
       )}
     </div>
   );
