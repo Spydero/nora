@@ -12,6 +12,18 @@ const DEFAULT_CODES: Partial<Record<number, string>> = {
   [HttpStatus.TOO_MANY_REQUESTS]: 'RATE_LIMITED',
 };
 
+const UNREACHABLE_CODES = new Set(['ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'EHOSTUNREACH', 'ENOTFOUND', 'P1001', 'P1002', 'P1017', '57P01', '57P03']);
+
+/** True when the error, or anything that caused it, says the database or cache can't be reached. */
+export function isUnreachable(error: unknown, depth = 0): boolean {
+  if (!error || typeof error !== 'object' || depth > 5) return false;
+  const e = error as { code?: unknown; name?: unknown; cause?: unknown; errors?: unknown };
+  if (typeof e.code === 'string' && UNREACHABLE_CODES.has(e.code)) return true;
+  if (e.name === 'PrismaClientInitializationError') return true;
+  if (Array.isArray(e.errors) && e.errors.some((x) => isUnreachable(x, depth + 1))) return true;
+  return isUnreachable(e.cause, depth + 1);
+}
+
 /** Consistent error envelope (PRD 7.4). Never echoes request bodies or clinical payloads. */
 @Catch()
 export class HttpExceptionFilter implements ExceptionFilter {
@@ -39,6 +51,11 @@ export class HttpExceptionFilter implements ExceptionFilter {
       code = DEFAULT_CODES[status] ?? 'HTTP_ERROR';
       message = exception.message;
       retryable = status === HttpStatus.TOO_MANY_REQUESTS;
+    } else if (isUnreachable(exception)) {
+      status = HttpStatus.SERVICE_UNAVAILABLE;
+      code = 'SERVICE_UNAVAILABLE';
+      message = 'Nora can’t reach your records right now. This is usually brief, so please try again in a minute.';
+      this.logger.error({ correlationId: req.correlationId, path: req.route?.path ?? req.path, method: req.method }, 'Database or cache unreachable');
     } else {
       this.logger.error(
         { correlationId: req.correlationId, path: req.route?.path ?? req.path, method: req.method },

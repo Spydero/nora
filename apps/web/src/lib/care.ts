@@ -363,13 +363,22 @@ export const URGENCY_LABEL: Record<UrgencyLevel, string> = {
   self_care: "Self-care",
 };
 
+/** Every date is shown in India time so the app, the doctor summary and its PDF agree whatever the device's clock says. */
+export const TIME_ZONE = "Asia/Kolkata";
+
 export function formatDate(iso: string, withTime = false): string {
   return new Intl.DateTimeFormat("en-IN", {
     day: "numeric",
     month: "short",
     year: "numeric",
-    ...(withTime ? { hour: "numeric", minute: "2-digit" } : {}),
+    timeZone: TIME_ZONE,
+    ...(withTime ? { hour: "numeric", minute: "2-digit", hour12: true } : {}),
   }).format(new Date(iso));
+}
+
+/** YYYY-MM-DD in India time, for file names. */
+export function isoDay(iso: string): string {
+  return new Intl.DateTimeFormat("en-CA", { timeZone: TIME_ZONE }).format(new Date(iso));
 }
 
 export function clinicAddress(clinic: Provider["clinic"]): string {

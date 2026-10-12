@@ -33,14 +33,17 @@ const result = {
 
 const input: DoctorSummaryInput = {
   checkId: 'c1',
-  createdAt: new Date('2026-10-13T06:00:00Z'),
+  createdAt: new Date('2026-10-12T19:00:00Z'),
+  assessedAt: new Date('2026-10-12T19:10:00Z'),
   patient: { name: 'Aarav Sharma', age: 34, sexAtBirth: 'MALE' },
   profile: { conditions: { state: 'known', items: ['Mild asthma'] }, medications: { state: 'none', items: [] }, allergies: { state: 'known', items: ['Penicillin'] } },
   ownWords: ['My throat has been sore for 3 days and I feel feverish'],
+  answers: [{ question: 'Have you had a cough?', answer: 'No' }],
+  additional: [],
   result,
   review: null,
   urgencyTitles: { soon: 'See a doctor within 24–48 hours', urgent: 'See a doctor today' },
-  now: new Date('2026-10-13T07:00:00Z'),
+  now: new Date('2026-10-12T19:30:00Z'),
 };
 
 const section = (s: ReturnType<typeof buildDoctorSummary>, id: string) => s.sections.find((x) => x.id === id)?.text ?? '';
@@ -58,12 +61,39 @@ describe('doctor summary', () => {
     expect(section(s, 'history')).toContain('Allergies: Penicillin');
     expect(section(s, 'history')).toContain('Relevant to this consultation: Long-term lung condition');
     expect(section(s, 'assessment')).toContain('Urgency: See a doctor within 24–48 hours');
-    expect(section(s, 'assessment')).toContain('Bacterial throat infection (Streptococcal pharyngitis): more likely');
-    expect(section(s, 'assessment')).toContain('not a diagnosis');
+    expect(section(s, 'assessment')).not.toContain('Bacterial');
+    expect(section(s, 'explanation')).toContain('Bacterial throat infection (Streptococcal pharyngitis): more likely');
+    expect(section(s, 'explanation')).toContain('not a diagnosis');
+    expect(section(s, 'explanation')).toContain('cannot change the urgency');
+    expect(section(s, 'recommendations')).toContain('Next step: See a doctor within 24–48 hours');
+    expect(section(s, 'answers')).toBe('- Have you had a cough? — No');
     expect(section(s, 'changes')).toContain('profile does not list it');
     expect(section(s, 'sources').split('\n')).toHaveLength(1);
     expect(section(s, 'notes')).toBe('');
     expect(section(s, 'disclaimer')).toMatch(/may have edited/);
+  });
+
+  it('uses India time for every date, including the file name', () => {
+    const s = buildDoctorSummary(input);
+    expect(section(s, 'patient')).toContain('Check started: 13 October 2026, 12:30 am IST');
+    expect(section(s, 'patient')).toContain('Assessed: 13 October 2026, 12:40 am IST');
+    expect(section(s, 'disclaimer')).toContain('Prepared on 13 October 2026');
+    expect(s.fileDate).toBe('2026-10-13');
+  });
+
+  it('includes what the patient added at the end and how this relates to an earlier check', () => {
+    const s = buildDoctorSummary({
+      ...input,
+      additional: ['I work night shifts.'],
+      result: {
+        ...result,
+        episode: { earlier: { checkId: 'p1', text: '3 October 2026 — sore throat.', href: '/summary/p1' }, answer: 'returned', label: 'You said your symptoms got better after your earlier check, then came back.' },
+        triage: { decidedBy: 'rules', missingSafety: [{ key: 'drooling', label: 'Drooling', gap: 'unsure' }] },
+      },
+    });
+    expect(section(s, 'notes')).toBe('I work night shifts.');
+    expect(section(s, 'earlier')).toContain('got better after your earlier check, then came back');
+    expect(section(s, 'assessment')).toContain('- Drooling (patient unsure)');
   });
 
   it('shows a clinician’s corrected urgency instead of Nora’s', () => {

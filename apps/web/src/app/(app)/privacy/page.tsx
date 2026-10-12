@@ -5,7 +5,7 @@ import { Download, ShieldCheck, Trash2 } from "lucide-react";
 import { Alert, Button, Card, StatusBadge, TextField } from "@nora/ui";
 import { Loading, LoadError, PageShell, SectionTitle } from "@/components/page";
 import { ApiError } from "@/lib/api";
-import { careApi, formatDate, type PrivacyRequest } from "@/lib/care";
+import { careApi, formatDate, isoDay, type PrivacyRequest } from "@/lib/care";
 import type { ConsentNotice } from "@/lib/checks";
 import { useLoad } from "@/lib/use-load";
 
@@ -125,7 +125,7 @@ function ExportData({ onExported }: { onExported(): void }) {
     setFailure(null);
     try {
       const data = await careApi.exportData();
-      const name = `nora-export-${new Date().toISOString().slice(0, 10)}.json`;
+      const name = `nora-export-${isoDay(new Date().toISOString())}.json`;
       const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: "application/json" }));
       const link = Object.assign(document.createElement("a"), { href: url, download: name });
       link.click();

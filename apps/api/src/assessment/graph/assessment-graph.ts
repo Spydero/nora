@@ -4,28 +4,31 @@ import { Annotation, END, START, StateGraph, messagesStateReducer } from '@langc
 import { z } from 'zod';
 import type { DecisionPort } from '../../ai/decisions.js';
 import type { ModelSet } from '../../ai/models.js';
-import { type BundleContent, type UrgencyLevel, urgencyRank } from '../../clinical/bundle.schema.js';
+import type { BundleContent } from '../../clinical/bundle.schema.js';
 import {
   checkScope,
   detectConcerns,
+  episodeFacts,
   evaluateUrgency,
   type FactMap,
-  missingRequiredFacts,
   nextQuestion,
   type ScopeOutcome,
   unresolvedSafety,
   type UrgencyOutcome,
 } from '../../clinical/rules-engine.js';
 import type { KnowledgePort } from '../../knowledge/knowledge.port.js';
-import { applyObservations, extractWithModel, guardConfirmed, mergeObservations, type TokenUsage, usageOf } from '../extraction/llm-extractor.js';
-import { extractWithRules, type Observation } from '../extraction/rule-extractor.js';
+import { applyHedged, applyObservations, extractWithModel, guardConfirmed, mergeObservations, type TokenUsage, usageOf } from '../extraction/llm-extractor.js';
+import { extractWithRules, hedgedMentions, type Observation } from '../extraction/rule-extractor.js';
 import type { AnswerConflict, EvidenceRef, Generator, ResultContent } from '../result.types.js';
 import { answerFacts, recommendationConflicts } from './consistency.js';
+import { triage } from '../../clinical/triage.js';
 import {
   buildResult,
   caseSummary,
   concernDefs,
+  daysSince,
   type EmergencyContacts,
+  episodeContext,
   escalationResult,
   recordQuestions,
   recurrence,
@@ -78,6 +81,8 @@ const State = Annotation.Root({
   observations: Annotation<Observation[]>({ reducer: (_a, b) => b, default: () => [] }),
   /** Conflicts found in this run's message. */
   conflicts: Annotation<AnswerConflict[]>({ reducer: (_a, b) => b, default: () => [] }),
+  /** Facts this run's message mentioned with doubt; Nora will ask about them. */
+  hedged: Annotation<string[]>({ reducer: (_a, b) => b, default: () => [] }),
   asked: last<string[]>(),
   turnCount: last<number>(),
   concerns: Annotation<string[]>({ reducer: (_a, b) => b, default: () => [] }),
@@ -116,12 +121,17 @@ const recordsOf = (s: AssessmentState) => relevantMemory(s.context.memory, s.con
 /** Real verification failures, as opposed to the model not producing a draft at all. */
 const verificationFailed = (s: AssessmentState) => s.issues.some((i) => !i.startsWith('Draft could not be produced'));
 
-/**
- * When the AI explanation failed Nora's checks, the case may be less simple
- * than the rules alone suggest, so the result never falls back to self-care
- * alone: it asks for a doctor's opinion and a clinician review.
- */
-export const UNVERIFIED_FLOOR: UrgencyLevel = 'routine';
+/** Source of a duration Nora lengthened because the patient said the problem never went away after their earlier check. */
+export const EPISODE_SOURCE = 'episode';
+
+/** A recent finished check for the same problem; the check this one deliberately follows up doesn't count. */
+const priorCheck = (s: AssessmentState, concerns: string[]) =>
+  recurrence(
+    s.bundle,
+    concerns,
+    s.context.memory.filter((m) => !m.checkId || m.checkId !== s.context.parentCheckId),
+    s.context.now ?? new Date(),
+  );
 
 function draftSchema(codes: [string, ...string[]]) {
   return z.object({
@@ -166,36 +176,59 @@ export function buildAssessmentGraph(deps: AssessmentDeps) {
     if (!s.context.patientMessage) return {};
     await stage('extracting');
     const text = s.context.patientMessage.text;
-    const apply = (observations: Observation[]): Update => {
+    const ruleHedged = hedgedMentions(s.bundle, text);
+    const answerOnly = episodeFacts(s.bundle);
+    const apply = (extracted: Observation[], mentioned: { factKey: string; quote: string }[]): Update => {
+      const all = extracted.filter((o) => !answerOnly.has(o.factKey));
+      const hedged = mentioned.filter((h) => !answerOnly.has(h.factKey));
+      const doubted = new Set(hedged.map((h) => h.factKey));
+      const observations = all.filter((o) => !doubted.has(o.factKey) || (s.bundle.facts[o.factKey]?.critical && o.state === 'PRESENT'));
       const guarded = guardConfirmed(s.bundle, s.facts, observations);
-      return { observations: guarded.observations, facts: applyObservations(s.bundle, s.facts, guarded.observations), conflicts: guarded.conflicts };
+      const unclear = applyHedged(s.facts, hedged, guarded.observations);
+      return {
+        observations: guarded.observations,
+        facts: { ...unclear, ...applyObservations(s.bundle, s.facts, guarded.observations) },
+        conflicts: guarded.conflicts,
+        hedged: Object.keys(unclear),
+      };
     };
     const rules = extractWithRules(s.bundle, text);
-    const ruleUpdate = apply(rules);
+    const ruleUpdate = apply(rules, ruleHedged);
     const ruleFacts = { ...s.facts, ...ruleUpdate.facts };
     const quick = evaluateUrgency(s.bundle, ruleFacts, detectConcerns(s.bundle, ruleFacts));
     if (quick.level === 'emergency' || !deps.models) return ruleUpdate;
     try {
       const llm = await extractWithModel(deps.models.fast, s.bundle, text);
-      return { ...apply(mergeObservations(s.bundle, rules, llm.observations)), usage: llm.usage };
+      return { ...apply(mergeObservations(s.bundle, rules, llm.observations), [...ruleHedged, ...llm.hedged]), usage: llm.usage };
     } catch (e) {
       return { ...ruleUpdate, aiErrors: [`extraction: ${errorText(e)}`] };
     }
   };
 
-  const triage = async (s: AssessmentState): Promise<Update> => {
+  /**
+   * The earlier check only makes Nora ask how this one relates to it; the
+   * patient's answer, not the record, decides whether it counts. When they say
+   * it never went away, the time since that check is the shortest it can have
+   * lasted.
+   */
+  const triageNode = async (s: AssessmentState): Promise<Update> => {
     await stage('checking_safety');
     const concerns = detectConcerns(s.bundle, s.facts);
     const codes = concerns.map((c) => c.code);
     const facts: FactMap = { ...s.facts };
-    const earlier = s.context.memory.filter((m) => !m.checkId || m.checkId !== s.context.parentCheckId);
-    if (s.bundle.facts.recurrent && !facts.recurrent && recurrence(s.bundle, codes, earlier, s.context.now ?? new Date())) {
-      facts.recurrent = { state: 'PRESENT', source: 'memory' };
+    const prior = priorCheck(s, codes);
+    if (prior && s.bundle.facts.prior_similar_check && !facts.prior_similar_check) {
+      facts.prior_similar_check = { state: 'PRESENT', source: 'memory' };
+    }
+    const since = prior ? daysSince(prior.recordedAt ?? undefined, s.context.now ?? new Date()) : null;
+    const reported = facts.duration_days?.state === 'PRESENT' ? Number(facts.duration_days.value) : null;
+    if (facts.episode_ongoing?.state === 'PRESENT' && since !== null && reported !== null && reported < since && s.bundle.facts.duration_days) {
+      facts.duration_days = { state: 'PRESENT', value: since, source: EPISODE_SOURCE };
     }
     return {
       concerns: codes,
       facts,
-      urgency: evaluateUrgency(s.bundle, facts, concerns),
+      urgency: triage(s.bundle, facts, concerns).urgency,
       scope: checkScope(s.bundle, facts, concerns),
     };
   };
@@ -203,17 +236,23 @@ export function buildAssessmentGraph(deps: AssessmentDeps) {
   const escalate = async (s: AssessmentState): Promise<Update> => {
     await stage('escalating');
     const urgency = s.urgency!;
-    const keys = urgency.triggered.filter((t) => t.level === 'emergency').map((t) => t.sourceKey);
+    const concerns = concernDefs(s.bundle, s.concerns);
+    const keys = [
+      ...urgency.triggered.map((t) => t.sourceKey),
+      ...s.bundle.urgencyActions.emergency.careItems.map((id) => s.bundle.careItems[id]!.sourceKey),
+    ];
     for (const chunk of await deps.knowledge.bySourceKeys([...new Set(keys)], 1)) registry.add(chunk);
-    const result = escalationResult(s.bundle, s.facts, concernDefs(s.bundle, s.concerns), urgency, registry, s.context.emergency, recordsOf(s), conflictsOf(s));
-    return { outcome: 'ESCALATED', result, evidence: registry.list(), generator: 'rules' };
+    const result = escalationResult(s.bundle, s.facts, concerns, urgency, registry, s.context.emergency, recordsOf(s), conflictsOf(s), {
+      episode: episodeContext(s.facts, priorCheck(s, s.concerns)),
+    });
+    return { outcome: 'ESCALATED', result, evidence: result.evidence, generator: 'rules' };
   };
 
   const unsupported = async (s: AssessmentState): Promise<Update> => {
-    for (const chunk of await deps.knowledge.bySourceKeys(['src_self_care_general'], 1)) registry.add(chunk);
+    for (const chunk of await deps.knowledge.bySourceKeys(['src_self_care_general', ...(s.urgency?.triggered ?? []).map((t) => t.sourceKey)], 1)) registry.add(chunk);
     const message = s.scope?.message ?? 'Nora cannot assess this concern yet. Please speak with a doctor.';
     const result = unsupportedResult(s.bundle, s.facts, s.urgency!, message, registry, s.context.emergency, recordsOf(s), conflictsOf(s));
-    return { outcome: 'UNSUPPORTED', result, evidence: registry.list(), generator: 'rules' };
+    return { outcome: 'UNSUPPORTED', result, evidence: result.evidence, generator: 'rules' };
   };
 
   /** Nora keeps asking while anything important is open; the plan is finite because answered questions are never asked again. */
@@ -388,26 +427,11 @@ export function buildAssessmentGraph(deps: AssessmentDeps) {
   const finalize = async (s: AssessmentState): Promise<Update> => {
     await stage('finalizing');
     const concerns = concernDefs(s.bundle, s.concerns);
+    const decision = triage(s.bundle, s.facts, concerns);
     const unresolved = unresolvedSafety(s.bundle, s.facts, concerns);
-    const missing = [...new Set([...missingRequiredFacts(s.bundle, s.facts, concerns), ...unresolved])];
+    const missing = [...new Set([...decision.missingRequired.map((m) => m.key), ...unresolved])];
     const unverified = s.generator === 'template_fallback' && verificationFailed(s);
-    const urgency: UrgencyOutcome =
-      unverified && urgencyRank(s.urgency!.level) < urgencyRank(UNVERIFIED_FLOOR)
-        ? {
-            ...s.urgency!,
-            level: UNVERIFIED_FLOOR,
-            triggered: [
-              ...s.urgency!.triggered,
-              {
-                ruleId: 'unverified_explanation',
-                level: UNVERIFIED_FLOOR,
-                message: 'Nora couldn’t confirm an explanation for your symptoms, so it recommends a doctor’s opinion rather than self-care alone.',
-                sourceKey: 'src_self_care_general',
-                careItems: [],
-              },
-            ],
-          }
-        : s.urgency!;
+    const urgency = s.urgency!;
     const limitations: string[] = [];
     if (unresolved.length) {
       limitations.push('You weren’t sure about, or skipped, a question about warning signs. Nora can’t assume they are absent, so it recommends a doctor checks you.');
@@ -424,12 +448,9 @@ export function buildAssessmentGraph(deps: AssessmentDeps) {
     if (s.generator === 'template_fallback') {
       limitations.push(
         unverified
-          ? 'The AI explanation didn’t pass Nora’s safety checks, so it isn’t shown. The explanations below are Nora’s approved guidance, and a clinician will review this result.'
-          : 'The AI service didn’t respond properly, so Nora is showing its standard approved guidance instead. Your urgency advice comes from Nora’s safety rules and is unaffected.',
+          ? 'The AI explanation didn’t pass Nora’s checks, so it isn’t shown. The explanations below are Nora’s approved guidance, and a clinician will review this result. Your urgency advice comes from Nora’s clinical rules and is unaffected.'
+          : 'The AI service didn’t respond properly, so Nora is showing its standard approved guidance instead. Your urgency advice comes from Nora’s clinical rules and is unaffected.',
       );
-    }
-    if (s.reviewReasons.includes('decision_model_flagged_possible_emergency')) {
-      limitations.push(`A secondary safety check suggested this may be more serious. If you feel very unwell, call ${s.context.emergency.number}.`);
     }
     const memory = recordsOf(s);
     const records = recordQuestions(memory);
@@ -457,13 +478,15 @@ export function buildAssessmentGraph(deps: AssessmentDeps) {
       emergency: s.context.emergency,
       verification: { passed: s.issues.length === 0, attempts: s.draftAttempts, issues: s.issues },
       memory,
+      missingSafety: decision.missingSafety,
+      episode: episodeContext(s.facts, priorCheck(s, s.concerns)),
     });
     const contradictions = recommendationConflicts(result);
     if (contradictions.length) result.verification = { ...result.verification, issues: [...result.verification.issues, ...contradictions] };
     return {
       outcome: missing.length ? 'INCOMPLETE' : 'COMPLETED',
       result,
-      evidence: registry.list(),
+      evidence: result.evidence,
       urgency,
       ...(contradictions.length ? { reviewReasons: ['contradiction_detected'] } : {}),
     };
@@ -471,7 +494,7 @@ export function buildAssessmentGraph(deps: AssessmentDeps) {
 
   const graph = new StateGraph(State)
     .addNode('extract', extract)
-    .addNode('triage', triage)
+    .addNode('triage', triageNode)
     .addNode('escalate', escalate)
     .addNode('unsupported', unsupported)
     .addNode('select_question', selectQuestion)

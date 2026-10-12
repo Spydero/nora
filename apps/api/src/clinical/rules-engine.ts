@@ -281,15 +281,21 @@ export function presentQuestion(q: QuestionDef, facts: FactMap): QuestionDef {
 }
 
 /** Why a question is worth asking now, most important first. */
-export type QuestionReason = 'safety' | 'urgency' | 'required' | 'history' | 'detail';
+export type QuestionReason = 'safety' | 'clarify' | 'episode' | 'urgency' | 'required' | 'history' | 'detail' | 'closing';
 
 export const QUESTION_REASON_TEXT: Record<QuestionReason, string> = {
   safety: 'Warning signs',
+  clarify: 'You mentioned this; Nora wants to be sure',
+  episode: 'Your earlier check',
   urgency: 'Could change how soon you should be seen',
   required: 'Needed to assess this properly',
   history: 'Your health background',
   detail: 'Helps tell possible causes apart',
+  closing: 'Anything else (optional)',
 };
+
+/** Source marking a fact the patient mentioned but hedged ("maybe a fever"), so Nora asks rather than assumes. */
+export const UNCLEAR_SOURCE = 'unclear';
 
 export interface PlannedQuestion {
   id: string;
@@ -300,6 +306,10 @@ export interface PlannedQuestion {
 const LEVEL_WEIGHT: Record<UrgencyLevel, number> = { emergency: 1, urgent: 2, soon: 3, routine: 5, self_care: 9 };
 const REQUIRED_WEIGHT = 4;
 const DETAIL_WEIGHT = 7;
+/** Hedged mentions of a warning sign are cleared up straight after the warning-sign questions; other hedged mentions before routine detail. */
+const CLARIFY_CRITICAL_WEIGHT = 0.25;
+const CLARIFY_WEIGHT = 3.5;
+const EPISODE_WEIGHT = 0.5;
 
 /**
  * Open facts worth asking about, weighted by what their answer could change:
@@ -328,11 +338,32 @@ function factWeights(bundle: BundleContent, facts: FactMap, concerns: ConcernDef
   concerns.flatMap((c) => c.requiredFacts).forEach((k) => bump(k, REQUIRED_WEIGHT));
   const candidates = concerns.flatMap((c) => c.explanations);
   if (candidates.length > 1) candidates.flatMap((e) => [...e.supportingFacts, ...e.againstFacts]).forEach((k) => bump(k, DETAIL_WEIGHT));
+  for (const key of unclearFacts(facts)) bump(key, bundle.facts[key]?.critical ? CLARIFY_CRITICAL_WEIGHT : CLARIFY_WEIGHT);
   return weights;
 }
 
-function reasonFor(q: QuestionDef, weight: number): QuestionReason {
+/**
+ * Facts about how this check relates to an earlier one. Only Nora's memory and
+ * the patient's answer to the earlier-check question may set them; words like
+ * "again" in free text are too ambiguous to decide it.
+ */
+export function episodeFacts(bundle: BundleContent): Set<string> {
+  const q = bundle.episodeQuestion ? bundle.questions[bundle.episodeQuestion] : undefined;
+  const keys = (q?.options ?? []).flatMap((o) => (o.factKey ? [o.factKey] : []));
+  if (q?.askIf && 'fact' in q.askIf) keys.push(q.askIf.fact);
+  return new Set(keys);
+}
+
+/** Facts the patient mentioned but hedged, still waiting for a clear answer. */
+export function unclearFacts(facts: FactMap): string[] {
+  return Object.entries(facts)
+    .filter(([, f]) => f.source === UNCLEAR_SOURCE && isOpen(f))
+    .map(([k]) => k);
+}
+
+function reasonFor(q: QuestionDef, weight: number, unclear: boolean): QuestionReason {
   if (q.purpose === 'safety') return 'safety';
+  if (unclear) return 'clarify';
   if (q.purpose === 'history') return 'history';
   if (weight === 0 || weight === REQUIRED_WEIGHT) return 'required';
   return weight < DETAIL_WEIGHT ? 'urgency' : 'detail';
@@ -348,11 +379,19 @@ function reasonFor(q: QuestionDef, weight: number): QuestionReason {
  */
 export function planQuestions(bundle: BundleContent, facts: FactMap, concerns: ConcernDef[], asked: ReadonlySet<string>): PlannedQuestion[] {
   const screening = new Set(bundle.screeningQuestions);
-  const ordered = [...new Set([...bundle.screeningQuestions, ...concerns.flatMap((c) => c.questions)])];
+  const unclear = unclearFacts(facts);
+  const base = [...bundle.screeningQuestions, ...(bundle.episodeQuestion ? [bundle.episodeQuestion] : []), ...concerns.flatMap((c) => c.questions)];
+  const covered = new Set(base.flatMap((id) => (bundle.questions[id] ? questionFactKeys(bundle.questions[id]) : [])));
+  const clarifying = unclear
+    .filter((k) => !covered.has(k))
+    .flatMap((k) => Object.entries(bundle.questions).find(([, q]) => q.purpose !== 'safety' && q.type !== 'text' && questionFactKeys(q).includes(k))?.[0] ?? []);
+  const ordered = [...new Set([...base, ...clarifying])].filter((id) => id !== bundle.closingQuestion);
   const pending = new Set(
     ordered.filter((id) => {
       const q = bundle.questions[id];
-      return !!q && !asked.has(id) && !isResolved(q, facts) && (!q.askIf || evaluate(q.askIf, facts));
+      if (!q) return false;
+      const reopened = questionFactKeys(q).some((k) => unclear.includes(k));
+      return (!asked.has(id) || reopened) && !isResolved(q, facts) && (!q.askIf || evaluate(q.askIf, facts));
     }),
   );
   const askable = new Set([...pending].flatMap((id) => questionFactKeys(bundle.questions[id]!)));
@@ -362,11 +401,22 @@ export function planQuestions(bundle: BundleContent, facts: FactMap, concerns: C
     const q = bundle.questions[id];
     if (!q || !pending.has(id)) return;
     const open = questionFactKeys(q).filter((k) => isOpen(facts[k]));
-    const weight = screening.has(id) || q.purpose === 'safety' ? 0 : Math.min(...open.map((k) => weights.get(k) ?? Number.POSITIVE_INFINITY));
+    const weight =
+      screening.has(id) || q.purpose === 'safety'
+        ? 0
+        : id === bundle.episodeQuestion
+          ? EPISODE_WEIGHT
+          : Math.min(...open.map((k) => weights.get(k) ?? Number.POSITIVE_INFINITY));
     if (!Number.isFinite(weight)) return;
-    plan.push({ id, question: q, reason: reasonFor(q, weight), weight, index });
+    const reason = id === bundle.episodeQuestion ? 'episode' : reasonFor(q, weight, open.some((k) => unclear.includes(k)));
+    plan.push({ id, question: q, reason, weight, index });
   });
-  return plan.sort((a, b) => a.weight - b.weight || a.index - b.index).map(({ id, question, reason }) => ({ id, question, reason }));
+  const planned = plan.sort((a, b) => a.weight - b.weight || a.index - b.index).map(({ id, question, reason }) => ({ id, question, reason }));
+  const closing = bundle.closingQuestion;
+  if (closing && concerns.length > 0 && !asked.has(closing) && bundle.questions[closing]) {
+    planned.push({ id: closing, question: bundle.questions[closing], reason: 'closing' });
+  }
+  return planned;
 }
 
 /** The most important question still worth asking, or null when the assessment is complete. */

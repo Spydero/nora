@@ -42,27 +42,34 @@ async function toApiError(res: Response): Promise<ApiError> {
     error?: { code: string; message: string; retryable?: boolean; correlation_id?: string; details?: { fields?: FieldError[] } };
   } | null;
   const error = body?.error;
+  const unavailable = !error && [502, 503, 504].includes(res.status);
   return new ApiError(
     res.status,
-    error?.code ?? "HTTP_ERROR",
-    error?.message ?? "Something went wrong. Please try again.",
-    error?.retryable ?? false,
+    error?.code ?? (unavailable ? "SERVICE_UNAVAILABLE" : "HTTP_ERROR"),
+    error?.message ?? (unavailable ? UNAVAILABLE_MESSAGE : "Something went wrong. Please try again."),
+    error?.retryable ?? unavailable,
     error?.correlation_id,
     error?.details?.fields ?? [],
   );
 }
 
+const UNAVAILABLE_MESSAGE = "Nora is temporarily unavailable. This is usually brief, so please try again in a minute.";
+
 async function send(path: string, method: string, body?: unknown): Promise<Response> {
-  const headers: Record<string, string> = { Accept: "application/json" };
-  if (method !== "GET" && method !== "HEAD") headers["x-csrf-token"] = await getCsrfToken();
-  if (body !== undefined) headers["Content-Type"] = "application/json";
-  return fetch(`${BASE}${path}`, {
-    method,
-    headers,
-    credentials: "same-origin",
-    cache: "no-store",
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
+  try {
+    const headers: Record<string, string> = { Accept: "application/json" };
+    if (method !== "GET" && method !== "HEAD") headers["x-csrf-token"] = await getCsrfToken();
+    if (body !== undefined) headers["Content-Type"] = "application/json";
+    return await fetch(`${BASE}${path}`, {
+      method,
+      headers,
+      credentials: "same-origin",
+      cache: "no-store",
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+  } catch {
+    throw new ApiError(0, "NETWORK_ERROR", "Nora couldn’t be reached. Check your internet connection and try again.", true);
+  }
 }
 
 /** Rotates the refresh token once, sharing the result between concurrent callers. */

@@ -2,10 +2,12 @@
 
 import Link from "next/link";
 import { use, useState } from "react";
-import { ArrowLeft, Download, Info, Printer, RotateCcw } from "lucide-react";
+import { ArrowLeft, Download, FileText, Info, Printer, RotateCcw } from "lucide-react";
 import { Alert, Button, Card, cn } from "@nora/ui";
 import { Loading, LoadError, PageShell, textareaClass } from "@/components/page";
+import { isoDay } from "@/lib/care";
 import { checksApi, CURRENT_CHECK_KEY, type DoctorSummary } from "@/lib/checks";
+import { summaryPdf } from "@/lib/summary-pdf";
 import { useLoad } from "@/lib/use-load";
 
 const storageKey = (id: string) => `nora.summary.${id}`;
@@ -37,6 +39,7 @@ export default function DoctorSummaryPage({ params }: PageProps<"/summary/[id]">
   const { id } = use(params);
   const { data, error, reload } = useLoad(() => checksApi.doctorSummary(id), id);
   const [edits, setEdits] = useState<Record<string, string>>(() => (typeof window === "undefined" ? {} : savedEdits(id)));
+  const [pdf, setPdf] = useState<"idle" | "working" | "failed">("idle");
 
   const update = (next: Record<string, string>) => {
     setEdits(next);
@@ -62,15 +65,28 @@ export default function DoctorSummaryPage({ params }: PageProps<"/summary/[id]">
   }
 
   const edited = data.sections.filter((s) => edits[s.id] !== undefined && edits[s.id] !== s.text).length;
+  const fileName = `nora-consultation-summary-${data.fileDate ?? isoDay(data.generatedAt)}`;
 
-  const download = () => {
-    const url = URL.createObjectURL(new Blob([asText(data, edits)], { type: "text/plain;charset=utf-8" }));
+  const save = (blob: Blob, name: string) => {
+    const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `nora-consultation-summary-${data.generatedAt.slice(0, 10)}.txt`;
+    a.download = name;
     a.click();
-    URL.revokeObjectURL(url);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
+
+  const downloadPdf = async () => {
+    setPdf("working");
+    try {
+      save(await summaryPdf(data, edits), `${fileName}.pdf`);
+      setPdf("idle");
+    } catch {
+      setPdf("failed");
+    }
+  };
+
+  const downloadText = () => save(new Blob([asText(data, edits)], { type: "text/plain;charset=utf-8" }), `${fileName}.txt`);
 
   return (
     <PageShell
@@ -84,11 +100,14 @@ export default function DoctorSummaryPage({ params }: PageProps<"/summary/[id]">
       }
     >
       <div className="flex flex-wrap gap-2 print:hidden">
-        <Button onClick={download}>
-          <Download aria-hidden className="size-4" /> Download (.txt)
+        <Button onClick={downloadPdf} disabled={pdf === "working"}>
+          <Download aria-hidden className="size-4" /> {pdf === "working" ? "Preparing PDF…" : "Download PDF"}
+        </Button>
+        <Button variant="secondary" onClick={downloadText}>
+          <FileText aria-hidden className="size-4" /> Download text
         </Button>
         <Button variant="secondary" onClick={() => window.print()}>
-          <Printer aria-hidden className="size-4" /> Print or save as PDF
+          <Printer aria-hidden className="size-4" /> Print
         </Button>
         {edited > 0 && (
           <Button variant="secondary" onClick={() => update({})}>
@@ -96,6 +115,11 @@ export default function DoctorSummaryPage({ params }: PageProps<"/summary/[id]">
           </Button>
         )}
       </div>
+      {pdf === "failed" && (
+        <Alert status="danger" title="The PDF couldn’t be created">
+          Please try again, or use Download text or Print instead.
+        </Alert>
+      )}
       {edited > 0 && (
         <p className="text-meta text-fg-muted print:hidden">
           You’ve changed {edited} section{edited === 1 ? "" : "s"}. The summary says it may have been edited.

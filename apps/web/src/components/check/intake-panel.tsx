@@ -90,9 +90,12 @@ export function IntakePanel({
                           ? "border border-info/30 bg-info-bg"
                           : m.kind === "notice"
                             ? "border border-warning/30 bg-warning-bg"
-                            : "bg-subtle",
+                            : m.kind === "understood"
+                              ? "border border-brand-teal/30 bg-subtle"
+                              : "bg-subtle",
                   )}
                 >
+                  {m.kind === "understood" && <p className="text-meta font-semibold text-brand-teal">What Nora understood</p>}
                   {m.kind === "review" && (
                     <p className="text-meta font-semibold text-info">{check.review?.clinician ? `Note from ${check.review.clinician}` : "Note from your clinician"}</p>
                   )}

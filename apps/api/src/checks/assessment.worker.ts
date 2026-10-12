@@ -4,8 +4,11 @@ import { ConfigService } from '@nestjs/config';
 import { type AiProvider, AiService, isProviderFailure, type ProviderName } from '../ai/ai.service.js';
 import { runAssessment } from '../assessment/graph/assessment-graph.js';
 import { PROMPT_VERSION } from '../assessment/graph/prompts.js';
+import { listText } from '../assessment/graph/compose.js';
+import type { Observation } from '../assessment/extraction/rule-extractor.js';
 import type { AnswerConflict } from '../assessment/result.types.js';
-import type { FactMap } from '../clinical/rules-engine.js';
+import type { BundleContent } from '../clinical/bundle.schema.js';
+import { type FactMap, quantity } from '../clinical/rules-engine.js';
 import type { Env } from '../config/env.js';
 import { Prisma } from '../generated/prisma/client.js';
 import { DbKnowledge } from '../knowledge/db-knowledge.js';
@@ -186,6 +189,10 @@ export class AssessmentWorker implements OnModuleInit, OnModuleDestroy {
         await this.store.event(tx, session.id, 'answer_conflict', c as unknown as Record<string, unknown>);
         await tx.message.create({ data: { sessionId: session.id, sender: 'nora', kind: 'notice', text: conflictNotice(c), inputVersion } });
       }
+      if (message && (message.questionId || out.hedged.length)) {
+        const text = understoodNotice(bundle, out.observations, out.hedged);
+        await tx.message.create({ data: { sessionId: session.id, sender: 'nora', kind: 'understood', text, inputVersion } });
+      }
       const urgency = out.urgency!;
       await tx.urgencyDecision.create({
         data: { sessionId: session.id, inputVersion, level: urgency.level, ruleIds: urgency.triggered.map((t) => t.ruleId), bundleId: session.bundleId },
@@ -194,9 +201,16 @@ export class AssessmentWorker implements OnModuleInit, OnModuleDestroy {
 
       if (outcome === 'NEEDS_INPUT') {
         const question = bundle.questions[out.nextQuestionId!]!;
-        await tx.message.create({
-          data: { sessionId: session.id, sender: 'nora', kind: 'question', text: question.text, questionId: out.nextQuestionId, inputVersion },
+        const lastQuestion = await tx.message.findFirst({
+          where: { sessionId: session.id, sender: 'nora', kind: 'question' },
+          orderBy: { createdAt: 'desc' },
+          select: { questionId: true },
         });
+        if (lastQuestion?.questionId !== out.nextQuestionId) {
+          await tx.message.create({
+            data: { sessionId: session.id, sender: 'nora', kind: 'question', text: question.text, questionId: out.nextQuestionId, inputVersion },
+          });
+        }
         await tx.assessmentSession.update({
           where: { id: session.id },
           data: { status: 'COLLECTING', pendingQuestionId: out.nextQuestionId, urgency: urgency.level, concernCode },
@@ -225,9 +239,9 @@ export class AssessmentWorker implements OnModuleInit, OnModuleDestroy {
         },
       });
       await tx.assessmentResult.updateMany({ where: { sessionId: session.id, id: { not: result.id }, supersededAt: null }, data: { supersededAt: new Date() } });
-      if (out.evidence.length) {
+      if (content.evidence.length) {
         await tx.evidenceLink.createMany({
-          data: out.evidence.map((e) => ({ resultId: result.id, chunkId: e.chunkId, documentId: e.documentId, citationId: e.citationId })),
+          data: content.evidence.map((e) => ({ resultId: result.id, chunkId: e.chunkId, documentId: e.documentId, citationId: e.citationId })),
           skipDuplicates: true,
         });
       }
@@ -299,6 +313,28 @@ export function conflictNotice(c: AnswerConflict): string {
   return c.resolution === 'treated_as_present'
     ? `Earlier you answered “${answered}” to “${c.label}”, but your message ${mentioned}. Because it can be a warning sign, Nora is treating it as present to be safe.`
     : `Earlier you answered “${answered}” to “${c.label}”, but your message ${mentioned}. Nora has kept your answer. If it has changed, tell your doctor.`;
+}
+
+/** What Nora took from a free-text message, so the patient can correct it straight away. */
+export function understoodNotice(bundle: BundleContent, observations: Observation[], hedged: string[]): string {
+  const label = (key: string) => bundle.facts[key]?.label.toLowerCase() ?? key;
+  const said = observations.filter((o) => o.state === 'PRESENT').map((o) => {
+    const def = bundle.facts[o.factKey];
+    return def?.type === 'number' && o.value !== undefined ? `${label(o.factKey)}: ${quantity(o.value, def.unit)}` : label(o.factKey);
+  });
+  const not = observations.filter((o) => o.state === 'ABSENT').map((o) => label(o.factKey));
+  const unclear = hedged.map(label);
+  const parts = [
+    said.length ? `you have ${listText(said)}` : '',
+    not.length ? `you don’t have ${listText(not)}` : '',
+  ].filter(Boolean);
+  const lines = [
+    parts.length ? `Nora understood that ${parts.join(', and ')}.` : 'Thanks, Nora has added this to your doctor summary.',
+    unclear.length ? `You sounded unsure about ${listText(unclear)}, so Nora will ask about ${unclear.length > 1 ? 'them' : 'it'} rather than guess.` : '',
+    !parts.length && !unclear.length ? 'Nora didn’t find anything in it that changes its questions or your urgency, so your doctor can read it in your own words.' : '',
+    parts.length ? 'If Nora got anything wrong, just say so.' : '',
+  ];
+  return lines.filter(Boolean).join(' ');
 }
 
 function hashFacts(facts: FactMap): string {

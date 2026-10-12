@@ -1,7 +1,8 @@
 import { type BundleContent, type ConcernDef, type UrgencyLevel, maxUrgency, urgencyRank } from '../../clinical/bundle.schema.js';
 import { type FactMap, quantity, type TriggeredRule, type UrgencyOutcome, warningLevel } from '../../clinical/rules-engine.js';
 import { type MemoryItem, memoryLine } from '../../memory/memory.types.js';
-import type { AnswerConflict, FindingItem, Generator, ResultContent, ResultStatus } from '../result.types.js';
+import type { TriageDecision } from '../../clinical/triage.js';
+import type { AnswerConflict, EpisodeContext, FindingItem, Generator, ResultContent, ResultStatus } from '../result.types.js';
 import { SELF_RESOLVING } from './consistency.js';
 import type { EvidenceRegistry } from './evidence-registry.js';
 import type { Draft } from './verify.js';
@@ -71,6 +72,34 @@ export function caseSummary(bundle: BundleContent, facts: FactMap, concerns: str
 export function recurrence(bundle: BundleContent, concerns: string[], memory: MemoryItem[], now: Date): MemoryItem | null {
   const since = now.getTime() - bundle.meta.recurrenceDays * 86_400_000;
   return memory.find((m) => m.kind === 'past_check' && !!m.concernCode && concerns.includes(m.concernCode) && Date.parse(m.recordedAt ?? '') >= since) ?? null;
+}
+
+const EPISODE_ANSWERS: [string, EpisodeContext['answer'], string][] = [
+  ['episode_ongoing', 'ongoing', 'You said this is the same problem as your earlier check and it hasn’t gone away.'],
+  ['recurrent', 'returned', 'You said your symptoms got better after your earlier check, then came back.'],
+  ['episode_new', 'new', 'You said this is a new episode — you had fully recovered after your earlier check.'],
+];
+
+/**
+ * How this check relates to a recent one for the same problem. The earlier
+ * check never sets facts on its own; only the patient's answer does, so a new
+ * check is assessed independently.
+ */
+export function episodeContext(facts: FactMap, prior: MemoryItem | null): EpisodeContext | undefined {
+  if (!prior) return undefined;
+  const earlier = { ...(prior.checkId ? { checkId: prior.checkId } : {}), text: prior.text, href: prior.checkId ? `/summary/${prior.checkId}` : prior.href };
+  const said = EPISODE_ANSWERS.find(([key]) => facts[key]?.state === 'PRESENT');
+  if (said) return { earlier, answer: said[1], label: said[2] };
+  const unsure = EPISODE_ANSWERS.some(([key]) => facts[key]?.state === 'UNKNOWN' || facts[key]?.state === 'DECLINED');
+  return unsure
+    ? { earlier, answer: 'unsure', label: 'You weren’t sure whether this is the same problem as your earlier check, so Nora assessed it on its own.' }
+    : { earlier, answer: null, label: 'Nora assessed this check on its own.' };
+}
+
+/** Days since a recorded date, rounded down. */
+export function daysSince(iso: string | undefined, now: Date): number | null {
+  const t = Date.parse(iso ?? '');
+  return Number.isNaN(t) ? null : Math.max(0, Math.floor((now.getTime() - t) / 86_400_000));
 }
 
 /**
@@ -201,6 +230,46 @@ interface BuildArgs {
   verification: ResultContent['verification'];
   memory: MemoryItem[];
   answerConflicts?: AnswerConflict[];
+  missingSafety?: TriageDecision['missingSafety'];
+  episode?: EpisodeContext;
+}
+
+/** Same question, ignoring case, spacing and the closing punctuation. */
+export function uniqueQuestions(questions: string[]): string[] {
+  const seen = new Set<string>();
+  return questions.filter((q) => {
+    const key = q.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+/**
+ * Keeps only the sources the result actually cites and numbers them in the
+ * order they first appear, rewriting every citation (including "[E7]" in the
+ * text) so the numbers on screen run E1, E2, … without gaps.
+ */
+export function citedEvidence(result: ResultContent): ResultContent {
+  const order: string[] = [];
+  const see = (ids: string[]) => ids.forEach((id) => order.includes(id) || order.push(id));
+  see(result.urgency.reasons.flatMap((r) => r.citations));
+  see(result.explanations.flatMap((e) => e.citations));
+  see(result.carePlan.flatMap((c) => c.citations));
+  see([result.summary, ...result.explanations.map((e) => e.rationale)].flatMap((s) => s.match(/\bE\d+\b/g) ?? []));
+  const known = new Map(result.evidence.map((e) => [e.citationId, e]));
+  const kept = order.filter((id) => known.has(id));
+  const renumber = new Map(kept.map((id, i) => [id, `E${i + 1}`]));
+  const ids = (list: string[]) => list.flatMap((id) => (renumber.has(id) ? [renumber.get(id)!] : []));
+  const text = (s: string) => s.replace(/\bE\d+\b/g, (id) => renumber.get(id) ?? id);
+  return {
+    ...result,
+    summary: text(result.summary),
+    urgency: { ...result.urgency, reasons: result.urgency.reasons.map((r) => ({ ...r, citations: ids(r.citations) })) },
+    explanations: result.explanations.map((e) => ({ ...e, rationale: text(e.rationale), citations: ids(e.citations) })),
+    carePlan: result.carePlan.map((c) => ({ ...c, citations: ids(c.citations) })),
+    evidence: kept.map((id) => ({ ...known.get(id)!, citationId: renumber.get(id)! })),
+  };
 }
 
 const WARNING_CAUTION = 'Your answers include warning signs, so don’t wait for this to settle on its own. Follow the advice above.';
@@ -210,7 +279,7 @@ export function buildResult(a: BuildArgs): ResultContent {
   const byCode = new Map(a.concerns.flatMap((c) => c.explanations).map((e) => [e.code, e]));
   const warned = urgencyRank(a.urgency.level) >= urgencyRank('soon');
   const handoffFrames: Record<UrgencyLevel, string> = { emergency: 'Now', urgent: 'Today', soon: 'Within 24–48 hours', routine: 'Within 1–2 weeks if not improving', self_care: 'If symptoms continue or worsen' };
-  return {
+  return citedEvidence({
     schemaVersion: '1',
     status: a.status,
     urgency: {
@@ -229,7 +298,7 @@ export function buildResult(a: BuildArgs): ResultContent {
       return [{ code: e.code, label: e.label, plain: e.plain, clinical: e.clinical, likelihood: d.likelihood, rationale: d.rationale, citations: d.citations, ...caution }];
     }),
     carePlan: carePlan(a.bundle, a.urgency.level, a.urgency.triggered, a.concerns, a.registry, a.facts),
-    questionsForClinician: a.draft.questionsForClinician,
+    questionsForClinician: uniqueQuestions(a.draft.questionsForClinician),
     missingInformation: a.missing.map((key) => ({ key, label: a.bundle.facts[key]?.label ?? key })),
     limitations: a.limitations,
     handoff: {
@@ -245,7 +314,9 @@ export function buildResult(a: BuildArgs): ResultContent {
     verification: a.verification,
     memory: a.memory.map(({ id, kind, label, text, href, checkId }) => ({ id, kind, label, text, href, ...(checkId ? { checkId } : {}), used: a.draft.memoryRefs.includes(id) })),
     ...(a.answerConflicts?.length ? { answerConflicts: a.answerConflicts } : {}),
-  };
+    triage: { decidedBy: 'rules', missingSafety: a.missingSafety ?? [] },
+    ...(a.episode ? { episode: a.episode } : {}),
+  });
 }
 
 export function escalationResult(
@@ -257,12 +328,14 @@ export function escalationResult(
   emergency: EmergencyContacts,
   memory: MemoryItem[] = [],
   answerConflicts: AnswerConflict[] = [],
+  extra: Pick<BuildArgs, 'missingSafety' | 'episode'> = {},
 ): ResultContent {
   const f = findings(bundle, facts);
   const labels = (items: FindingItem[]) => items.filter((x) => bundle.facts[x.key]?.type === 'boolean').map((x) => x.label.toLowerCase());
   const told = labels(f.present);
   const background = labels(f.history?.present ?? []);
   return buildResult({
+    ...extra,
     bundle,
     facts,
     concerns,
@@ -301,9 +374,11 @@ export function unsupportedResult(
   emergency: EmergencyContacts,
   memory: MemoryItem[] = [],
   answerConflicts: AnswerConflict[] = [],
+  extra: Pick<BuildArgs, 'missingSafety' | 'episode'> = {},
 ): ResultContent {
   const level: UrgencyLevel = urgency.level === 'self_care' ? 'routine' : urgency.level;
   return buildResult({
+    ...extra,
     bundle,
     facts,
     concerns: [],

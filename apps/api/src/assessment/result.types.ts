@@ -84,4 +84,17 @@ export interface ResultContent {
   verification: { passed: boolean; attempts: number; issues: string[] };
   /** Confirmed records Nora took into account; `used` marks items the explanation relied on. Absent on results saved before memory existed. */
   memory?: { id: string; kind: string; label: string; text: string; href: string; checkId?: string; used: boolean }[];
+  /** How the urgency was decided. AI output is written afterwards and never changes it. Absent on older results. */
+  triage?: {
+    decidedBy: 'rules';
+    missingSafety: { key: string; label: string; gap: 'unsure' | 'skipped' | 'not_asked' }[];
+  };
+  /** A recent check for the same problem and how the patient said this one relates to it. */
+  episode?: EpisodeContext;
+}
+
+export interface EpisodeContext {
+  earlier: { checkId?: string; text: string; href: string };
+  answer: 'ongoing' | 'returned' | 'new' | 'unsure' | null;
+  label: string;
 }

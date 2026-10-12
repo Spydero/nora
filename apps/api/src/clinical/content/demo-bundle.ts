@@ -5,7 +5,7 @@ import { type BundleContent, type BundleInput, bundleContentSchema, type Conditi
  * bounded-assessment pipeline end to end; must be replaced by clinician-authored,
  * approved content before any real patient use.
  */
-export const DEMO_BUNDLE_VERSION = '2026.10-demo.6';
+export const DEMO_BUNDLE_VERSION = '2026.10-demo.7';
 
 type QuestionInput = BundleInput['questions'][string];
 
@@ -538,12 +538,17 @@ const demoBundleInput: BundleInput = {
     fainted: { label: 'Fainted or passed out', type: 'boolean', synonyms: ['fainted', 'passed out', 'blacked out', 'fainting', 'lost consciousness'], critical: true },
     palpitations: { label: 'Racing, pounding or irregular heartbeat', type: 'boolean', synonyms: ['palpitations', 'heart racing', 'heart is racing', 'pounding heart', 'irregular heartbeat'], critical: true },
     self_harm_thoughts: { label: 'Thoughts of harming yourself', type: 'boolean', synonyms: ['kill myself', 'suicide', 'end my life', 'harm myself', 'self harm'], critical: true },
-    recurrent: { label: 'A similar check in the last 30 days', type: 'boolean', synonyms: [], critical: false, kind: 'context' },
+    prior_similar_check: { label: 'A check for the same problem in the last 30 days', type: 'boolean', synonyms: [], critical: false, kind: 'context' },
+    episode_ongoing: { label: 'Same episode as the earlier check, not gone away', type: 'boolean', synonyms: [], critical: false, kind: 'context' },
+    recurrent: { label: 'Got better after the earlier check, then came back', type: 'boolean', synonyms: [], critical: false, kind: 'context' },
+    episode_new: { label: 'New episode after fully recovering', type: 'boolean', synonyms: [], critical: false, kind: 'context' },
     duration_days: { label: 'How long symptoms have lasted', type: 'number', unit: 'days', synonyms: [], critical: false },
     pain_score: { label: 'Pain severity', type: 'number', unit: '/10', synonyms: [], critical: false },
   },
 
   screeningQuestions: ['q_main_concern', 'q_age', 'q_red_flags'],
+  episodeQuestion: 'q_episode',
+  closingQuestion: 'q_anything_else',
 
   questions: {
     q_main_concern: {
@@ -569,6 +574,26 @@ const demoBundleInput: BundleInput = {
         { value: 'back_pain', label: 'Lower back pain', factKey: 'back_pain', exclusive: false },
         { value: 'none', label: 'Something else', exclusive: true },
       ],
+    },
+    q_episode: {
+      text: 'You did a check for a similar problem recently. Which best describes how things are now?',
+      why: 'Nora assesses this check on its own. Your answer only tells it whether to count the time since your earlier check.',
+      purpose: 'history',
+      type: 'multi',
+      allowSkip: false,
+      askIf: { fact: 'prior_similar_check', is: 'present' },
+      options: [
+        { value: 'ongoing', label: 'It’s the same problem and it hasn’t gone away', factKey: 'episode_ongoing', exclusive: true },
+        { value: 'returned', label: 'It got better, then came back', factKey: 'recurrent', exclusive: true },
+        { value: 'new', label: 'It’s a new episode — I had fully recovered', factKey: 'episode_new', exclusive: true },
+        { value: 'unsure', label: 'Not sure', exclusive: true, unsure: true },
+      ],
+    },
+    q_anything_else: {
+      text: 'Is there anything else you’d like us to know?',
+      why: 'Optional. Nora reads what you write and asks about anything that needs clarifying. It’s also added to your doctor summary.',
+      type: 'text',
+      allowSkip: true,
     },
     q_age: {
       text: 'How old are you?',
@@ -812,7 +837,8 @@ const demoBundleInput: BundleInput = {
     { id: 'r_dizzy_heart', level: 'soon', concerns: ['dizziness'], when: { fact: 'heart_disease', is: 'present' }, message: 'Dizziness with a heart condition should be checked by a doctor.', careItems: [], sourceKey: 'src_dizziness' },
     { id: 'r_diabetes_vomiting', level: 'soon', when: { all: [{ fact: 'diabetes', is: 'present' }, { fact: 'vomiting', is: 'present' }] }, message: 'Vomiting with diabetes can upset your blood sugar and should be checked by a doctor.', careItems: [], sourceKey: 'src_gastro' },
     { id: 'r_prolonged', level: 'routine', when: { fact: 'duration_days', gte: 14 }, message: 'Symptoms lasting two weeks or more are worth discussing with a doctor.', careItems: [], sourceKey: 'src_self_care_general' },
-    { id: 'r_recurrent', level: 'routine', when: { fact: 'recurrent', is: 'present' }, message: 'You checked a similar problem recently. Symptoms that keep coming back are worth discussing with a doctor.', careItems: [], sourceKey: 'src_self_care_general' },
+    { id: 'r_recurrent', level: 'routine', when: { fact: 'recurrent', is: 'present' }, message: 'You said your symptoms got better after your earlier check and then came back. Symptoms that keep returning are worth discussing with a doctor.', careItems: [], sourceKey: 'src_self_care_general' },
+    { id: 'r_episode_ongoing', level: 'routine', when: { fact: 'episode_ongoing', is: 'present' }, message: 'You said this is the same problem as your earlier check and it hasn’t gone away. Symptoms that are lasting are worth discussing with a doctor.', careItems: [], sourceKey: 'src_self_care_general' },
   ],
 
   exclusions: [

@@ -16,7 +16,7 @@ const messageSchema = z.object({
 const answerSchema = z.object({
   questionId: z.string().min(1).max(100),
   inputVersion: z.number().int().min(0),
-  value: z.union([z.enum(['yes', 'no', 'unsure']), z.number(), z.array(z.string().max(100)).max(20), z.null()]),
+  value: z.union([z.enum(['yes', 'no', 'unsure']), z.number(), z.array(z.string().max(100)).max(20), z.string().max(2000), z.null()]),
 });
 const eventsQuery = z.object({ after: z.string().regex(/^\d{1,19}$/).default('0') });
 

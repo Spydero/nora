@@ -28,6 +28,8 @@ export interface QuestionView {
   reason: string | null;
   /** What Nora still plans to check after this question; it shrinks or grows with the answers. */
   stillToCover: string[];
+  /** The earlier check this question refers to, when it asks how the two relate. */
+  earlierCheck: { id: string; title: string | null; createdAt: string; advice: string | null } | null;
 }
 
 export interface CheckView {
@@ -164,15 +166,24 @@ export class ChecksService {
       throw error;
     }
 
+    const written = mapped.written === true;
     await this.prisma.$transaction(async (tx) => {
       const next = await this.bumpInput(tx, session.id, session.inputVersion, { pendingQuestionId: null });
       await tx.answer.updateMany({ where: { sessionId: id, questionId, supersededAt: null }, data: { supersededAt: new Date() } });
       await tx.answer.create({
-        data: { sessionId: id, questionId, state: this.answerState(mapped.facts), value: (value ?? Prisma.DbNull) as Prisma.InputJsonValue, inputVersion: next },
+        data: {
+          sessionId: id,
+          questionId,
+          state: written ? 'PRESENT' : this.answerState(mapped.facts),
+          value: (value ?? Prisma.DbNull) as Prisma.InputJsonValue,
+          inputVersion: next,
+        },
       });
       await this.store.writeFacts(tx, id, mapped.facts, next);
-      await tx.message.create({ data: { sessionId: id, sender: 'patient', kind: 'answer', text: mapped.label, questionId, inputVersion: next } });
-      await this.enqueue(tx, principal, id, next, {});
+      const message = await tx.message.create({
+        data: { sessionId: id, sender: 'patient', kind: written ? 'text' : 'answer', text: mapped.label, questionId, inputVersion: next },
+      });
+      await this.enqueue(tx, principal, id, next, written ? { messageId: message.id } : {});
     });
     return this.view(principal, id);
   }
@@ -215,6 +226,7 @@ export class ChecksService {
     const q = defined ? presentQuestion(defined, facts) : undefined;
     const plan = defined ? planQuestions(bundle, facts, detectConcerns(bundle, facts), new Set(await this.store.askedQuestions(this.prisma, id))) : [];
     const reason = plan.find((p) => p.id === session.pendingQuestionId)?.reason ?? null;
+    const earlierCheck = session.pendingQuestionId && session.pendingQuestionId === bundle.episodeQuestion ? await this.earlierCheck(session, bundle) : null;
     return {
       id: session.id,
       status: session.status,
@@ -237,6 +249,7 @@ export class ChecksService {
             options: (q.options ?? []).map((o) => ({ value: o.value, label: o.label, exclusive: o.exclusive })),
             reason: reason ? QUESTION_REASON_TEXT[reason] : null,
             stillToCover: [...new Set(plan.filter((p) => p.id !== session.pendingQuestionId).map((p) => QUESTION_REASON_TEXT[p.reason]))],
+            earlierCheck,
           }
         : null,
       result: result
@@ -270,10 +283,20 @@ export class ChecksService {
       this.prisma.patientProfile.findUnique({ where: { tenantId_userId: { tenantId: principal.tenantId, userId: principal.userId } } }),
       this.prisma.user.findUnique({ where: { id: principal.userId }, select: { displayName: true } }),
     ]);
-    const { createdAt: _savedAt, ...result } = check.result;
+    const { createdAt: assessedAt, ...result } = check.result;
+    const replies = new Map<string, { text: string; written: boolean }>();
+    for (const m of check.messages) if (m.sender === 'patient' && m.questionId) replies.set(m.questionId, { text: m.text, written: m.kind === 'text' });
+    const asked = [...new Set(check.messages.filter((m) => m.sender === 'nora' && m.kind === 'question' && m.questionId).map((m) => m.questionId!))];
+    const closing = bundle.closingQuestion;
+    const closingReply = closing ? replies.get(closing) : undefined;
     return buildDoctorSummary({
       checkId: id,
       createdAt: session.createdAt,
+      assessedAt: new Date(assessedAt),
+      answers: asked
+        .filter((q) => q !== closing && replies.has(q))
+        .map((q) => ({ question: bundle.questions[q]?.text ?? q, answer: replies.get(q)!.text })),
+      additional: closingReply?.written ? [closingReply.text] : [],
       patient: {
         name: user?.displayName ?? null,
         age: profile?.dateOfBirth ? ageOn(profile.dateOfBirth, session.createdAt) : null,
@@ -282,7 +305,7 @@ export class ChecksService {
       profile: profile
         ? { conditions: profile.conditions as ProfileList | null, medications: profile.medications as ProfileList | null, allergies: profile.allergies as ProfileList | null }
         : null,
-      ownWords: check.messages.filter((m) => m.sender === 'patient' && m.kind === 'text').map((m) => m.text),
+      ownWords: check.messages.filter((m) => m.sender === 'patient' && m.kind === 'text' && !m.questionId).map((m) => m.text),
       result,
       review: check.review,
       urgencyTitles: Object.fromEntries(Object.entries(bundle.urgencyActions).map(([k, v]) => [k, v.title])),
@@ -308,6 +331,31 @@ export class ChecksService {
       await this.prisma.taskAcknowledgement.deleteMany({ where: { resultId: result.id, itemId } });
     }
     return this.view(principal, id);
+  }
+
+  /** The most recent finished check for the same problem inside the bundle's recurrence window, as the assessment sees it. */
+  private async earlierCheck(
+    session: { id: string; tenantId: string; patientUserId: string; parentSessionId: string | null; concernCode: string | null; createdAt: Date },
+    bundle: BundleContent,
+  ): Promise<QuestionView['earlierCheck']> {
+    if (!session.concernCode) return null;
+    const earlier = await this.prisma.assessmentSession.findFirst({
+      where: {
+        tenantId: session.tenantId,
+        patientUserId: session.patientUserId,
+        concernCode: session.concernCode,
+        status: { in: ['COMPLETED', 'INCOMPLETE', 'ESCALATED'] },
+        currentResultId: { not: null },
+        createdAt: { gte: new Date(Date.now() - bundle.meta.recurrenceDays * 86_400_000) },
+        id: { notIn: [session.id, ...(session.parentSessionId ? [session.parentSessionId] : [])] },
+      },
+      orderBy: { createdAt: 'desc' },
+      select: { id: true, title: true, createdAt: true, currentResultId: true },
+    });
+    if (!earlier) return null;
+    const result = await this.prisma.assessmentResult.findUnique({ where: { id: earlier.currentResultId! }, select: { content: true } });
+    const content = result?.content as unknown as ResultContent | undefined;
+    return { id: earlier.id, title: earlier.title, createdAt: earlier.createdAt.toISOString(), advice: content?.urgency.title ?? null };
   }
 
   private async parentSnapshot(principal: AuthPrincipal, parentId: string): Promise<CheckView['parent']> {
@@ -366,6 +414,7 @@ export class ChecksService {
 
   private answerState(facts: FactMap) {
     const states = Object.values(facts).map((f) => f.state);
+    if (states.length === 0) return 'DECLINED' as const;
     if (states.includes('PRESENT')) return 'PRESENT' as const;
     if (states.includes('DECLINED')) return 'DECLINED' as const;
     if (states.includes('UNKNOWN')) return 'UNKNOWN' as const;

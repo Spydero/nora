@@ -1,8 +1,9 @@
 "use client";
 
 import { useState } from "react";
-import { AlertTriangle, FileSearch, History, Loader2, Stethoscope } from "lucide-react";
+import { AlertTriangle, FileSearch, History, Loader2, ShieldCheck, Sparkles, Stethoscope } from "lucide-react";
 import { Alert, Card, cn, Panel, StatusBadge, type Status } from "@nora/ui";
+import { formatDate } from "@/lib/care";
 import type { CheckResult, CheckView, UrgencyLevel } from "@/lib/checks";
 import { EmptyState } from "./intake-panel";
 
@@ -21,10 +22,23 @@ const LIKELIHOOD: Record<CheckResult["explanations"][number]["likelihood"], { la
 };
 
 const GENERATOR: Record<CheckResult["generator"], string> = {
-  llm: "Explanations written by AI from approved sources, then checked by Nora’s safety rules.",
-  template: "Nora’s standard approved guidance.",
-  template_fallback: "Nora’s standard approved guidance. The AI explanation was unavailable or didn’t pass Nora’s safety checks, so it isn’t shown.",
-  rules: "Safety rules decided this result; no AI was used.",
+  llm: "Urgency decided by Nora’s clinical rules. Explanations written by AI from approved sources and checked by Nora; AI can’t change the urgency.",
+  template: "Urgency decided by Nora’s clinical rules. Explanations from Nora’s standard approved guidance.",
+  template_fallback: "Urgency decided by Nora’s clinical rules. The AI explanation was unavailable or didn’t pass Nora’s checks, so Nora’s approved guidance is shown instead.",
+  rules: "Nora’s clinical rules decided this result; no AI was used.",
+};
+
+const EXPLAINED_BY: Record<CheckResult["generator"], string> = {
+  llm: "Explained by AI · it can’t change your urgency",
+  template: "From Nora’s approved guidance",
+  template_fallback: "From Nora’s approved guidance",
+  rules: "From Nora’s clinical rules",
+};
+
+const SAFETY_GAP: Record<NonNullable<CheckResult["triage"]>["missingSafety"][number]["gap"], string> = {
+  unsure: "you weren’t sure",
+  skipped: "skipped",
+  not_asked: "not asked",
 };
 
 const RESULT_BADGE: Record<CheckResult["status"], string> = {
@@ -94,7 +108,7 @@ function ClinicianReview({ review }: { review: NonNullable<CheckView["review"]> 
       {review.patientNote && <p>“{review.patientNote}”</p>}
       <p className="mt-1 text-meta text-fg-muted">
         {corrected ? "Follow the clinician’s advice where it differs from Nora’s." : "The clinician agreed with Nora’s advice."}
-        {review.reviewedAt ? ` Reviewed ${new Date(review.reviewedAt).toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" })}.` : ""}
+        {review.reviewedAt ? ` Reviewed ${formatDate(review.reviewedAt, true)}.` : ""}
       </p>
     </Alert>
   );
@@ -114,6 +128,7 @@ export function ResultView({
   const status = URGENCY_STATUS[result.urgency.level];
   const [terms, setTerms] = useState(defaultTerms);
   const usedRecords = result.memory?.filter((m) => m.used) ?? [];
+  const missingSafety = result.triage?.missingSafety ?? [];
   return (
     <div className="flex flex-col gap-4">
       {review && <ClinicianReview review={review} />}
@@ -121,30 +136,60 @@ export function ResultView({
         <p className="flex items-start gap-2 rounded-card bg-subtle px-3 py-2 text-secondary">
           <History aria-hidden className="mt-0.5 size-4 shrink-0 text-brand-teal" />
           <span>
-            Follow-up to your check on {new Date(parent.createdAt).toLocaleDateString("en-IN", { dateStyle: "medium" })}
+            Follow-up to your check on {formatDate(parent.createdAt)}
             {parent.title ? ` (${parent.title})` : ""}
             {parent.urgencyTitle ? `. Then, Nora advised: ${parent.urgencyTitle.toLowerCase()}.` : "."}
           </span>
         </p>
       )}
-      <Alert status={status} title={result.urgency.title}>
-        <p>{result.urgency.text}</p>
-        {result.urgency.reasons.length > 0 && (
-          <ul className="mt-2 list-disc pl-5 text-secondary">
-            {result.urgency.reasons.map((r) => (
-              <li key={r.ruleId}>
-                {r.message} <Citations ids={r.citations} />
-              </li>
-            ))}
-          </ul>
-        )}
-      </Alert>
+      {result.episode && (
+        <p className="flex items-start gap-2 rounded-card bg-subtle px-3 py-2 text-secondary">
+          <History aria-hidden className="mt-0.5 size-4 shrink-0 text-brand-teal" />
+          <span>
+            {result.episode.label}{" "}
+            {result.episode.earlier.checkId && (
+              <a href={`/summary/${result.episode.earlier.checkId}`} className="font-medium text-brand-teal underline-offset-2 hover:underline">
+                See the earlier check’s summary
+              </a>
+            )}
+          </span>
+        </p>
+      )}
+      <p className="text-meta text-fg-muted">Assessed {formatDate(result.createdAt, true)} IST</p>
+      <section aria-label="Urgency" className="flex flex-col gap-1.5">
+        <p className="flex items-center gap-1.5 text-meta font-medium text-fg-muted">
+          <ShieldCheck aria-hidden className="size-4 text-brand-teal" />
+          Decided by Nora’s clinical rules
+        </p>
+        <Alert status={status} title={result.urgency.title}>
+          <p>{result.urgency.text}</p>
+          {result.urgency.reasons.length > 0 && (
+            <ul className="mt-2 list-disc pl-5 text-secondary">
+              {result.urgency.reasons.map((r) => (
+                <li key={r.ruleId}>
+                  {r.message} <Citations ids={r.citations} />
+                </li>
+              ))}
+            </ul>
+          )}
+          {missingSafety.length > 0 && (
+            <p className="mt-2 text-secondary">
+              <span className="font-medium">Warning signs Nora couldn’t rule out:</span>{" "}
+              {missingSafety.map((m) => `${m.label.toLowerCase()} (${SAFETY_GAP[m.gap]})`).join("; ")}. Nora doesn’t assume these are absent.
+            </p>
+          )}
+        </Alert>
+      </section>
 
-      <section aria-labelledby="summary-h">
+      <section aria-labelledby="summary-h" className="flex flex-col gap-1">
         <h3 id="summary-h" className="text-card-title font-semibold">
           Summary
         </h3>
-        <p className="mt-1 text-body">{result.summary}</p>
+        <p className="flex items-center gap-1.5 text-meta font-medium text-fg-muted">
+          <Sparkles aria-hidden className="size-4 text-brand-teal" />
+          {EXPLAINED_BY[result.generator]}
+        </p>
+        <p className="text-body">{result.summary}</p>
       </section>
 
       {result.explanations.length > 0 && (

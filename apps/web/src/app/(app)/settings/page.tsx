@@ -5,7 +5,7 @@ import { Plus, X } from "lucide-react";
 import { Alert, Button, Card, cn, TextField } from "@nora/ui";
 import { Loading, LoadError, PageShell, selectClass } from "@/components/page";
 import { ApiError, type FieldError } from "@/lib/api";
-import { careApi, formatDate, type HealthList, type ListState, type PatientProfile, type ProfileInput } from "@/lib/care";
+import { careApi, formatDate, isoDay, type HealthList, type ListState, type PatientProfile, type ProfileInput } from "@/lib/care";
 import { useLoad } from "@/lib/use-load";
 
 type Form = Omit<ProfileInput, "expectedVersion">;
@@ -112,7 +112,7 @@ export default function SettingsPage() {
               label="Date of birth"
               type="date"
               value={form.dateOfBirth ?? ""}
-              max={new Date().toISOString().slice(0, 10)}
+              max={isoDay(new Date().toISOString())}
               onChange={(e) => update({ dateOfBirth: e.target.value || null })}
               error={fieldError("dateOfBirth")}
               hint="Age changes which symptoms are urgent."

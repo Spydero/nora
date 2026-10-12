@@ -73,7 +73,8 @@ const questionSchema = z.object({
   why: z.string().optional(),
   /** Safety questions are always asked for their concern; the others only while their answer could still matter. */
   purpose: z.enum(QUESTION_PURPOSES).default('detail'),
-  type: z.enum(['yes_no', 'multi', 'number']),
+  /** `text` is a free-text reply that Nora reads like any other message. */
+  type: z.enum(['yes_no', 'multi', 'number', 'text']),
   factKey: z.string().optional(),
   options: z.array(optionSchema).optional(),
   min: z.number().optional(),
@@ -156,13 +157,21 @@ export const bundleContentSchema = z
       jurisdiction: z.string(),
       disclaimer: z.string(),
       ageMin: z.number().int(),
-      /** A finished check for the same concern within this many days sets the `recurrent` fact. */
+      /** A finished check for the same concern within this many days makes Nora ask how this episode relates to it. */
       recurrenceDays: z.number().int().positive().default(30),
     }),
     facts: z.record(z.string(), factSchema),
     concerns: z.array(concernSchema).min(1),
     questions: z.record(z.string(), questionSchema),
     screeningQuestions: z.array(z.string()),
+    /**
+     * Asked right after the warning signs when a recent check was about the
+     * same problem, so the patient (not Nora) says whether this is the same
+     * episode, a return, or a new one.
+     */
+    episodeQuestion: z.string().optional(),
+    /** Optional free-text question asked once, after everything else. */
+    closingQuestion: z.string().optional(),
     urgencyRules: z.array(ruleSchema),
     exclusions: z.array(exclusionSchema),
     careItems: z.record(z.string(), careItemSchema),
@@ -188,6 +197,8 @@ export const bundleContentSchema = z
       if (q.askIf) walk(q.askIf, `question ${id}`);
     }
     for (const id of content.screeningQuestions) if (!questions.has(id)) issue(`screening question ${id} missing`);
+    if (content.episodeQuestion && !questions.has(content.episodeQuestion)) issue(`episode question ${content.episodeQuestion} missing`);
+    if (content.closingQuestion && content.questions[content.closingQuestion]?.type !== 'text') issue(`closing question ${content.closingQuestion} must be a text question`);
     const explanationCodes = new Set<string>();
     for (const concern of content.concerns) {
       for (const e of concern.explanations) {

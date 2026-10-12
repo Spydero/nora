@@ -2,7 +2,7 @@ import type { QuestionDef } from '../clinical/bundle.schema.js';
 import { type FactMap, quantity } from '../clinical/rules-engine.js';
 
 /** `null` means the patient skipped the question. */
-export type AnswerValue = 'yes' | 'no' | 'unsure' | number | string[] | null;
+export type AnswerValue = 'yes' | 'no' | 'unsure' | number | string[] | string | null;
 
 export class InvalidAnswerError extends Error {}
 
@@ -10,7 +10,11 @@ export interface MappedAnswer {
   facts: FactMap;
   /** Patient-facing echo of what was answered. */
   label: string;
+  /** The patient wrote something Nora should read like a message. */
+  written?: boolean;
 }
+
+const NOTHING_MORE = /^(no|nope|nah|none|nothing|nothing else|nothing more|no thanks?|no,? thank you|that'?s (all|it)|n\/?a)[.!]?$/i;
 
 const YES_NO = { yes: ['PRESENT', 'Yes'], no: ['ABSENT', 'No'], unsure: ['UNKNOWN', 'Not sure'] } as const;
 
@@ -56,5 +60,14 @@ export function mapAnswer(q: QuestionDef, value: AnswerValue): MappedAnswer {
       }
       return { facts, label: chosen.map((o) => o.label).join(', ') };
     }
+    case 'text': {
+      if (typeof value !== 'string' || !value.trim()) throw new InvalidAnswerError('Write something, or skip this question.');
+      if (value.length > MAX_TEXT_ANSWER) throw new InvalidAnswerError(`Keep it under ${MAX_TEXT_ANSWER} characters.`);
+      const text = value.trim();
+      if (NOTHING_MORE.test(text.replace(/’/g, "'"))) return { facts: {}, label: text };
+      return { facts: {}, label: text, written: true };
+    }
   }
 }
+
+export const MAX_TEXT_ANSWER = 2000;

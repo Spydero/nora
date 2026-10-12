@@ -4,7 +4,7 @@ import Link from "next/link";
 import type { ReactNode } from "react";
 import { AlertTriangle, CalendarClock, Check, ChevronRight, FileText, History, MessageCircleQuestion, Phone, RefreshCw, ShieldCheck } from "lucide-react";
 import { Button, Card, cn, Panel, StatusBadge } from "@nora/ui";
-import { URGENCY_LABEL } from "@/lib/care";
+import { formatDate, URGENCY_LABEL } from "@/lib/care";
 import { type CarePlanItem, checksApi, type CheckView, type MemoryItem, TERMINAL } from "@/lib/checks";
 import type { CheckController } from "@/lib/use-check";
 import { useLoad } from "@/lib/use-load";
@@ -208,7 +208,7 @@ function Remembered({ check, onOpen }: { check: CheckView | null; onOpen(id: str
           <p className="text-meta font-medium text-fg-muted">Following up</p>
           <p className="font-semibold">{check.parent.title ?? "Earlier check"}</p>
           <p className="text-secondary text-fg-muted">
-            {new Date(check.parent.createdAt).toLocaleDateString("en-IN", { dateStyle: "medium" })}
+            {formatDate(check.parent.createdAt)}
             {check.parent.urgencyTitle ? ` · ${check.parent.urgencyTitle}` : ""}
           </p>
         </Card>

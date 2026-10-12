@@ -1,8 +1,9 @@
 "use client";
 
 import { useState, type FormEvent } from "react";
-import { Info } from "lucide-react";
+import { History, Info } from "lucide-react";
 import { Button, cn } from "@nora/ui";
+import { formatDate } from "@/lib/care";
 import type { AnswerValue, QuestionView } from "@/lib/checks";
 
 export function QuestionInput({ question, busy, onAnswer }: { question: QuestionView; busy: boolean; onAnswer(value: AnswerValue): void }) {
@@ -17,6 +18,16 @@ export function QuestionInput({ question, busy, onAnswer }: { question: Question
       <p id={`q-${question.id}`} className="text-card-title font-semibold">
         {question.text}
       </p>
+      {question.earlierCheck && (
+        <p className="flex gap-2 rounded-control bg-subtle px-3 py-2 text-secondary">
+          <History aria-hidden className="mt-0.5 size-4 shrink-0 text-brand-teal" />
+          <span>
+            Earlier check on {formatDate(question.earlierCheck.createdAt)}
+            {question.earlierCheck.title ? `: ${question.earlierCheck.title}` : ""}
+            {question.earlierCheck.advice ? `. Nora advised: ${question.earlierCheck.advice.toLowerCase()}.` : "."}
+          </span>
+        </p>
+      )}
       {question.why && (
         <p className="flex gap-2 text-secondary text-fg-muted">
           <Info aria-hidden className="mt-0.5 size-4 shrink-0" />
@@ -26,12 +37,13 @@ export function QuestionInput({ question, busy, onAnswer }: { question: Question
       {question.type === "yes_no" && <YesNo busy={busy} onAnswer={onAnswer} />}
       {question.type === "number" && <NumberAnswer key={question.id} question={question} busy={busy} onAnswer={onAnswer} />}
       {question.type === "multi" && <MultiAnswer key={question.id} question={question} busy={busy} onAnswer={onAnswer} />}
+      {question.type === "text" && <TextAnswer key={question.id} question={question} busy={busy} onAnswer={onAnswer} />}
       {question.allowSkip && (
         <button type="button" disabled={busy} onClick={() => onAnswer(null)} className="self-start text-secondary text-fg-muted underline-offset-2 hover:underline">
-          Skip this question
+          {question.type === "text" ? "No, nothing else" : "Skip this question"}
         </button>
       )}
-      {question.stillToCover && (
+      {question.stillToCover && question.type !== "text" && (
         <p className="border-t border-line pt-2 text-meta text-fg-muted">
           {question.stillToCover.length > 0
             ? `Still to check: ${question.stillToCover.join(" · ")}. Nora asks only what your answers make relevant, so this can change.`
@@ -94,6 +106,35 @@ function NumberAnswer({ question, busy, onAnswer }: { question: QuestionView; bu
           Enter a number between {question.min} and {question.max}.
         </p>
       )}
+    </form>
+  );
+}
+
+const MAX_TEXT = 2000;
+
+function TextAnswer({ question, busy, onAnswer }: { question: QuestionView; busy: boolean; onAnswer(value: AnswerValue): void }) {
+  const [text, setText] = useState("");
+  const trimmed = text.trim();
+
+  function submit(event: FormEvent) {
+    event.preventDefault();
+    if (trimmed) onAnswer(trimmed);
+  }
+
+  return (
+    <form onSubmit={submit} className="flex flex-col gap-2">
+      <textarea
+        aria-labelledby={`q-${question.id}`}
+        value={text}
+        maxLength={MAX_TEXT}
+        rows={3}
+        onChange={(event) => setText(event.target.value)}
+        placeholder="For example: other symptoms, recent travel, medicines you’ve tried, or anything worrying you"
+        className="min-h-20 w-full rounded-control border border-line-strong bg-panel px-3 py-2 text-body"
+      />
+      <Button type="submit" disabled={busy || !trimmed} className="self-end">
+        Send
+      </Button>
     </form>
   );
 }

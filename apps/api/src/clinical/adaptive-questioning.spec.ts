@@ -28,6 +28,7 @@ const number = (q: QuestionDef) => NUMBERS[q.factKey ?? ''] ?? q.min ?? 1;
 
 /** A patient who has none of the warning signs or risk factors. */
 const sayNo: Policy = (q) => {
+  if (q.type === 'text') return null;
   if (q.type === 'yes_no') return 'no';
   if (q.type === 'number') return number(q);
   const opts = q.options ?? [];

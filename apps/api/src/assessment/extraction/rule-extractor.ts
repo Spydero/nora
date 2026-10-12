@@ -15,8 +15,10 @@ const NEGATION = /\b(no|not|never|without|denies|deny|don't|dont|do not|doesn't|
 const HISTORICAL = /\b(last (year|month)|years ago|months ago|used to|in the past|history of|previously|as a child)\b/;
 const HYPOTHETICAL = /\b(what if|if i|in case|worried (that )?i (might|could|will)|could i get|might get|afraid of getting)\b/;
 const FAMILY = /\bmy (mother|mom|mum|father|dad|brother|sister|wife|husband|son|daughter|friend|grandmother|grandfather|child|kid|partner)\b/;
-const UNCERTAIN = /\b(maybe|not sure|might have|possibly|i think i might|unsure)\b/;
+const UNCERTAIN = /\b(maybe|not sure|might have|possibly|perhaps|i think i might|unsure|not certain|don't know if|dont know if)\b/;
+const UNSURE_NEAR = /\b(not sure|unsure|don't know|dont know|not certain)\b/;
 const NEGATION_WINDOW_TOKENS = 5;
+const UNSURE_WINDOW_TOKENS = 8;
 
 function clauses(text: string): { text: string; start: number }[] {
   const out: { text: string; start: number }[] = [];
@@ -34,10 +36,27 @@ function clauses(text: string): { text: string; start: number }[] {
 
 const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-function classify(clause: string, matchIndex: number): Assertion {
+/**
+ * Doubt that only loosely attaches to a symptom ("could be a fever", "a fever,
+ * not sure"). It never softens a warning sign, which stays affirmed so a
+ * possible emergency is never downgraded to a question.
+ */
+const SOFT_DOUBT_BEFORE = /\b(could be|might be|may be|possibly|probably)\b/;
+const SOFT_DOUBT_AFTER = /^(\W*\w+){0,3}?\W*\b(not sure|unsure|not certain)\W*$/;
+
+function classify(clause: string, matchIndex: number, matchLength = 0, critical = false): Assertion {
+  const assertion = classifyStrict(clause, matchIndex);
+  if (assertion !== 'affirmed' || critical) return assertion;
+  const before = clause.slice(0, matchIndex).trim().split(/\s+/).slice(-UNSURE_WINDOW_TOKENS).join(' ');
+  const after = clause.slice(matchIndex + matchLength).split(/\s+/).slice(0, 6).join(' ');
+  return SOFT_DOUBT_BEFORE.test(before) || SOFT_DOUBT_AFTER.test(after) ? 'uncertain' : assertion;
+}
+
+function classifyStrict(clause: string, matchIndex: number): Assertion {
   const before = clause.slice(0, matchIndex);
   const tokens = before.trim().split(/\s+/).slice(-NEGATION_WINDOW_TOKENS).join(' ');
   if (FAMILY.test(clause)) return 'family';
+  if (UNSURE_NEAR.test(before.trim().split(/\s+/).slice(-UNSURE_WINDOW_TOKENS).join(' '))) return 'uncertain';
   if (HYPOTHETICAL.test(clause)) return 'hypothetical';
   if (HISTORICAL.test(clause)) return 'historical';
   if (NEGATION.test(tokens)) return 'negated';
@@ -109,7 +128,7 @@ function phrasePattern(phrase: string): RegExp {
  * LLM) so emergency phrases are never missed because a model was unavailable
  * or wrong.
  */
-export function extractWithRules(bundle: BundleContent, message: string): Observation[] {
+function scan(bundle: BundleContent, message: string): Observation[] {
   const lower = message.toLowerCase();
   const found = new Map<string, Observation>();
 
@@ -121,7 +140,7 @@ export function extractWithRules(bundle: BundleContent, message: string): Observ
         const m = phrasePattern(phrase).exec(clause.text);
         if (!m) continue;
         const at = m.index + m[1]!.length;
-        const classified = classify(clause.text, at);
+        const classified = classify(clause.text, at, m[0].length - m[1]!.length, def.critical);
         const assertion = classified === 'historical' && def.kind === 'history' ? 'affirmed' : classified;
         const obs: Observation = {
           factKey,
@@ -164,5 +183,16 @@ export function extractWithRules(bundle: BundleContent, message: string): Observ
     else if (temp.value < 37.5) found.set('fever', { ...temp, factKey: 'fever', value: undefined, state: 'ABSENT', assertion: 'negated' });
   }
 
-  return [...found.values()].filter((o) => o.assertion === 'affirmed' || o.assertion === 'negated');
+  return [...found.values()];
+}
+
+export function extractWithRules(bundle: BundleContent, message: string): Observation[] {
+  return scan(bundle, message).filter((o) => o.assertion === 'affirmed' || o.assertion === 'negated');
+}
+
+/** Symptoms the patient mentioned but hedged ("maybe a fever"); Nora asks about them rather than assuming either way. */
+export function hedgedMentions(bundle: BundleContent, message: string): { factKey: string; quote: string }[] {
+  return scan(bundle, message)
+    .filter((o) => o.assertion === 'uncertain' && bundle.facts[o.factKey]?.type === 'boolean')
+    .map(({ factKey, quote }) => ({ factKey, quote }));
 }

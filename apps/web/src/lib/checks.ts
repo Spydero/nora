@@ -2,7 +2,7 @@ import { api } from "./api";
 
 export type UrgencyLevel = "self_care" | "routine" | "soon" | "urgent" | "emergency";
 export type CheckStatus = "DRAFT" | "COLLECTING" | "AWAITING_CONFIRMATION" | "ASSESSING" | "COMPLETED" | "INCOMPLETE" | "ESCALATED" | "ARCHIVED";
-export type AnswerValue = "yes" | "no" | "unsure" | number | string[] | null;
+export type AnswerValue = "yes" | "no" | "unsure" | number | string[] | string | null;
 
 export interface EmergencyContacts {
   number: string;
@@ -13,7 +13,7 @@ export interface QuestionView {
   id: string;
   text: string;
   why: string | null;
-  type: "yes_no" | "multi" | "number";
+  type: "yes_no" | "multi" | "number" | "text";
   unit: string | null;
   min: number | null;
   max: number | null;
@@ -23,6 +23,8 @@ export interface QuestionView {
   reason?: string | null;
   /** Topics Nora still plans to check; the list changes with each answer. */
   stillToCover?: string[];
+  /** The earlier check this question asks about. */
+  earlierCheck?: { id: string; title: string | null; createdAt: string; advice: string | null } | null;
 }
 
 export interface FindingItem {
@@ -82,6 +84,9 @@ export interface CheckResult {
   model: string | null;
   createdAt: string;
   memory?: { id: string; kind: MemoryKind; label: string; text: string; href: string; checkId?: string; used: boolean }[];
+  /** How urgency was decided; absent on results saved before it existed. */
+  triage?: { decidedBy: "rules"; missingSafety: { key: string; label: string; gap: "unsure" | "skipped" | "not_asked" }[] };
+  episode?: { earlier: { checkId?: string; text: string; href: string }; answer: "ongoing" | "returned" | "new" | "unsure" | null; label: string };
 }
 
 export type MemoryKind = "about" | "condition" | "medicine" | "allergy" | "past_check" | "appointment";
@@ -100,7 +105,7 @@ export interface MemoryItem {
 export interface CheckMessage {
   id: string;
   sender: "patient" | "nora";
-  kind: "text" | "answer" | "question" | "result" | "error" | "review" | "notice";
+  kind: "text" | "answer" | "question" | "result" | "error" | "review" | "notice" | "understood";
   text: string;
   questionId: string | null;
   createdAt: string;
@@ -134,6 +139,8 @@ export interface DoctorSummary {
   checkId: string;
   title: string;
   generatedAt: string;
+  /** Preparation date in India time (YYYY-MM-DD); missing from older servers. */
+  fileDate?: string;
   sections: { id: string; heading: string; text: string }[];
 }
 

@@ -2,7 +2,7 @@ import type { BaseChatModel } from '@langchain/core/language_models/chat_models'
 import { HumanMessage, SystemMessage } from '@langchain/core/messages';
 import { z } from 'zod';
 import type { BundleContent } from '../../clinical/bundle.schema.js';
-import type { FactMap } from '../../clinical/rules-engine.js';
+import { type FactMap, UNCLEAR_SOURCE } from '../../clinical/rules-engine.js';
 import { EXTRACTION_SYSTEM } from '../graph/prompts.js';
 import type { AnswerConflict } from '../result.types.js';
 import type { Observation } from './rule-extractor.js';
@@ -78,11 +78,19 @@ export function validateObservations(bundle: BundleContent, message: string, raw
   return out;
 }
 
+/** Yes/no facts the model saw mentioned with doubt, grounded in the patient's words like any other observation. */
+export function validateHedged(bundle: BundleContent, message: string, raw: z.infer<ReturnType<typeof extractionSchema>>['observations']): { factKey: string; quote: string }[] {
+  const haystack = normalise(message);
+  return raw
+    .filter((o) => o.assertion === 'uncertain' && bundle.facts[o.factKey]?.type === 'boolean' && o.quote.trim() && haystack.includes(normalise(o.quote)))
+    .map(({ factKey, quote }) => ({ factKey, quote }));
+}
+
 export async function extractWithModel(
   model: BaseChatModel,
   bundle: BundleContent,
   message: string,
-): Promise<{ observations: Observation[]; usage: TokenUsage }> {
+): Promise<{ observations: Observation[]; hedged: { factKey: string; quote: string }[]; usage: TokenUsage }> {
   const schema = extractionSchema(bundle);
   const catalogue = Object.entries(bundle.facts)
     .map(
@@ -95,7 +103,11 @@ export async function extractWithModel(
     new SystemMessage(`${EXTRACTION_SYSTEM}\n\nAllowed fact keys:\n${catalogue}`),
     new HumanMessage(`<patient_message>\n${message}\n</patient_message>`),
   ])) as { parsed: z.infer<typeof schema>; raw: unknown };
-  return { observations: validateObservations(bundle, message, parsed.observations), usage: usageOf(raw) };
+  return {
+    observations: validateObservations(bundle, message, parsed.observations),
+    hedged: validateHedged(bundle, message, parsed.observations),
+    usage: usageOf(raw),
+  };
 }
 
 /**
@@ -147,6 +159,23 @@ export function guardConfirmed(bundle: BundleContent, facts: FactMap, observatio
     if (safety) kept.push(o);
   }
   return { observations: kept, conflicts };
+}
+
+/**
+ * A hedged mention marks a fact as needing a question. It reopens an earlier
+ * "no" so Nora asks again rather than ignoring the doubt, but never touches
+ * something the patient said they have or were unsure about, or a clear
+ * statement in the same message.
+ */
+export function applyHedged(facts: FactMap, hedged: { factKey: string }[], clear: Observation[]): FactMap {
+  const stated = new Set(clear.map((o) => o.factKey));
+  const changes: FactMap = {};
+  for (const { factKey } of hedged) {
+    const state = facts[factKey]?.state;
+    if (stated.has(factKey) || state === 'PRESENT' || state === 'UNKNOWN' || state === 'DECLINED') continue;
+    changes[factKey] = { state: 'NOT_ASKED', source: UNCLEAR_SOURCE };
+  }
+  return changes;
 }
 
 /** Returns only facts that change. Extraction never clears a critical PRESENT; that needs an explicit answer. */

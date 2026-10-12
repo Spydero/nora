@@ -3,7 +3,7 @@ import { type DecisionAnswer, ScriptedDecisions } from '../../ai/decisions.js';
 import { ScriptedChatModel } from '../../ai/scripted-chat-model.js';
 import { demoBundle } from '../../clinical/content/demo-bundle.js';
 import { demoKnowledge } from '../../clinical/content/knowledge.js';
-import type { FactMap } from '../../clinical/rules-engine.js';
+import { type FactMap, presentQuestion } from '../../clinical/rules-engine.js';
 import { InMemoryKnowledge } from '../../knowledge/in-memory-knowledge.js';
 import type { MemoryItem } from '../../memory/memory.types.js';
 import { mergeObservations } from '../extraction/llm-extractor.js';
@@ -38,7 +38,7 @@ function input(facts: FactMap, opts: { message?: string; asked?: string[]; turnC
     bundle: demoBundle,
     context: { patientMessage: opts.message ? { id: 'm1', text: opts.message } : null, memory: [], emergency: contacts },
     facts: { age: { state: 'PRESENT', value: opts.age ?? 30, source: 'profile' }, ...facts },
-    asked: opts.asked ?? [],
+    asked: opts.asked ?? [demoBundle.closingQuestion!],
     turnCount: opts.turnCount ?? 1,
   };
 }
@@ -236,7 +236,8 @@ describe('assessment graph orchestration', () => {
     const out = await runAssessment(deps, input(strepCase));
     expect(out.reviewReasons).toContain('decision_model_flagged_possible_emergency');
     expect(out.result!.urgency.level).toBe('soon');
-    expect(out.result!.limitations.join(' ')).toContain('112');
+    expect(out.result!.urgency.reasons.map((r) => r.ruleId)).toEqual(out.urgency!.triggered.map((t) => t.ruleId));
+    expect(out.result!.limitations.join(' ')).not.toMatch(/secondary safety check/);
   });
 
   it('runs fully in template mode without any model', async () => {
@@ -275,19 +276,70 @@ describe('assessment graph orchestration', () => {
       { id: 'M2', kind: 'medicine', label: 'Current medicine', text: 'Levothyroxine', recordedAt: '2026-01-01T00:00:00Z', href: '/settings' },
       { id: 'M3', kind: 'past_check', label: 'Earlier check', text: '2 Oct 2026 — Sore throat.', recordedAt: '2026-10-02T09:00:00Z', href: '/history', checkId: 'c0', concernCode: 'sore_throat', urgency: 'self_care' },
     ];
-    const withMemory = (facts: FactMap, m = memory): AssessmentInput => ({ ...input(facts), context: { ...input(facts).context, memory: m, now } });
+    const newEpisode: FactMap = { episode_new: P(), episode_ongoing: A, recurrent: A };
+    const withMemory = (facts: FactMap, m = memory, episode: FactMap = newEpisode): AssessmentInput => ({
+      ...input({ ...episode, ...facts }),
+      context: { ...input(facts).context, memory: m, now },
+    });
 
-    it('flags a recent check for the same concern without treating it as a current symptom', async () => {
-      const out = await runAssessment(setup({ ai: false }).deps, withMemory(strepCase));
-      expect(out.facts.recurrent).toMatchObject({ state: 'PRESENT', source: 'memory' });
+    it('asks how this check relates to a recent one for the same problem, without assuming it came back', async () => {
+      const out = await runAssessment(setup({ ai: false }).deps, withMemory(strepCase, memory, {}));
+      expect(out.outcome).toBe('NEEDS_INPUT');
+      expect(out.nextQuestionId).toBe('q_episode');
+      expect(out.facts.prior_similar_check).toMatchObject({ state: 'PRESENT', source: 'memory' });
+      expect(out.facts.recurrent).toBeUndefined();
+      expect(out.urgency!.triggered.map((t) => t.ruleId)).not.toContain('r_recurrent');
+    });
+
+    it('never decides the episode from free text such as "again"; the patient chooses', async () => {
+      const { deps } = setup({ extraction: [{ observations: [
+        { factKey: 'sore_throat', state: 'PRESENT', value: null, quote: 'Sore throat', assertion: 'affirmed' },
+        { factKey: 'episode_ongoing', state: 'PRESENT', value: null, quote: 'again', assertion: 'affirmed' },
+      ] }] });
+      const out = await runAssessment(deps, { ...withMemory(noRedFlags, memory, {}), context: { ...withMemory(noRedFlags, memory, {}).context, patientMessage: { id: 'm1', text: 'Sore throat again since yesterday' } } });
+      expect(out.facts.episode_ongoing).toBeUndefined();
+      expect(out.nextQuestionId).toBe('q_episode');
+      expect(presentQuestion(demoBundle.questions.q_episode!, out.facts).options!.map((o) => o.value)).toEqual(['ongoing', 'returned', 'new', 'unsure']);
+    });
+
+    it('assesses a new episode on its own', async () => {
+      const independent = await runAssessment(setup({ ai: false }).deps, withMemory(strepCase));
+      const fresh = await runAssessment(setup({ ai: false }).deps, input(strepCase));
+      expect(independent.result!.urgency.level).toBe(fresh.result!.urgency.level);
+      expect(independent.result!.urgency.reasons.map((r) => r.ruleId)).toEqual(fresh.result!.urgency.reasons.map((r) => r.ruleId));
+      expect(independent.result!.episode).toMatchObject({ answer: 'new', earlier: { checkId: 'c0', href: '/summary/c0' } });
+    });
+
+    it('counts symptoms that came back only when the patient says so', async () => {
+      const out = await runAssessment(setup({ ai: false }).deps, withMemory(strepCase, memory, { recurrent: P(), episode_new: A, episode_ongoing: A }));
       expect(out.urgency!.triggered.map((t) => t.ruleId)).toContain('r_recurrent');
+      expect(out.result!.episode!.answer).toBe('returned');
       expect(out.result!.findings.present.map((f) => f.key)).not.toContain('recurrent');
     });
 
-    it('ignores past checks outside the recurrence window or for other concerns', async () => {
+    it('treats an ongoing episode as lasting at least since the earlier check', async () => {
+      const out = await runAssessment(setup({ ai: false }).deps, withMemory(strepCase, memory, { episode_ongoing: P(), episode_new: A, recurrent: A }));
+      expect(out.facts.duration_days).toMatchObject({ value: 10, source: 'episode' });
+      expect(out.urgency!.triggered.map((t) => t.ruleId)).toEqual(expect.arrayContaining(['r_episode_ongoing', 'r_sore_throat_long']));
+      expect(out.result!.episode!.answer).toBe('ongoing');
+    });
+
+    it('records "not sure" and assesses the check on its own', async () => {
+      const unsure = { state: 'UNKNOWN' as const, source: 'answer' };
+      const out = await runAssessment(setup({ ai: false }).deps, withMemory(strepCase, memory, { episode_ongoing: unsure, episode_new: unsure, recurrent: unsure }));
+      expect(out.outcome).toBe('COMPLETED');
+      expect(out.result!.episode!.answer).toBe('unsure');
+      expect(out.facts.duration_days).toMatchObject({ value: 3 });
+    });
+
+    it('ignores past checks outside the recurrence window, for other concerns, or that this check follows up', async () => {
       const old = [{ ...memory[2]!, recordedAt: '2026-08-01T09:00:00Z' }];
       const other = [{ ...memory[2]!, concernCode: 'headache' }];
-      for (const m of [old, other]) expect((await runAssessment(setup({ ai: false }).deps, withMemory(strepCase, m))).facts.recurrent).toBeUndefined();
+      for (const m of [old, other]) expect((await runAssessment(setup({ ai: false }).deps, withMemory(strepCase, m, {}))).facts.prior_similar_check).toBeUndefined();
+      const followUp = withMemory(strepCase, memory, {});
+      const out = await runAssessment(setup({ ai: false }).deps, { ...followUp, context: { ...followUp.context, parentCheckId: 'c0' } });
+      expect(out.facts.prior_similar_check).toBeUndefined();
+      expect(out.outcome).toBe('COMPLETED');
     });
 
     it('adds questions from confirmed allergies and medicines, citing their memory IDs', async () => {
@@ -362,16 +414,17 @@ describe('assessment graph orchestration', () => {
     };
     const unsafe = { ...goodDraft, summary: 'You have strep throat. Take 500 mg amoxicillin twice a day.' };
 
-    it('does not fall back to self-care when the AI explanation fails verification', async () => {
+    it('never lets a failed AI explanation change the rules’ urgency; a clinician reviews it instead', async () => {
       const { deps } = setup({ chat: [new AIMessage('ok')], drafts: [unsafe, unsafe], decisions: [ranking] });
       const out = await runAssessment(deps, input(viralCase));
+      const rulesOnly = (await runAssessment(setup({ ai: false }).deps, input(viralCase))).result!;
       const r = out.result!;
       expect(r.generator).toBe('template_fallback');
-      expect(r.urgency.level).toBe('routine');
-      expect(r.urgency.reasons.map((x) => x.ruleId)).toContain('unverified_explanation');
-      expect(r.handoff.recommended).toBe(true);
-      expect(out.urgency!.level).toBe('routine');
+      expect(r.urgency).toEqual(rulesOnly.urgency);
+      expect(r.triage).toEqual(rulesOnly.triage);
       expect(out.reviewReasons).toContain('ai_draft_failed_verification');
+      expect(r.limitations.join(' ')).toMatch(/clinician will review/);
+      expect(r.summary).not.toMatch(/amoxicillin|strep throat/i);
     });
 
     it('keeps self-care when the AI is simply unavailable, and fails over on drafting errors', async () => {
@@ -418,6 +471,20 @@ describe('assessment graph orchestration', () => {
       expect(out.facts.cough).toMatchObject({ state: 'ABSENT', source: 'answer' });
       expect(out.conflicts).toEqual([{ key: 'cough', label: 'Cough', answered: 'no', mentioned: 'yes', resolution: 'kept_answer' }]);
       expect(out.result!.answerConflicts).toEqual(out.conflicts);
+    });
+
+    it('asks again when the patient now doubts an earlier "no", even if the model read it as a yes', async () => {
+      const { deps } = setup({
+        chat: [new AIMessage('ok')],
+        drafts: [goodDraft],
+        decisions: [ranking],
+        extraction: [{ observations: [{ factKey: 'fever', state: 'PRESENT', value: null, quote: 'Could be a fever too', assertion: 'affirmed' }] }],
+      });
+      const out = await runAssessment(deps, input({ ...strepCase, fever: A }, { message: 'Could be a fever too, not sure.', asked: ALL_ASKED }));
+      expect(out.conflicts).toEqual([]);
+      expect(out.hedged).toEqual(['fever']);
+      expect(out.facts.fever).toMatchObject({ state: 'NOT_ASKED', source: 'unclear' });
+      expect(out.nextQuestionId).toBe('q_fever');
     });
 
     it('treats a warning sign mentioned after a "no" as present, and reports it', async () => {
