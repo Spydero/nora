@@ -13,6 +13,8 @@ export type FactStateName = 'PRESENT' | 'ABSENT' | 'UNKNOWN' | 'DECLINED' | 'NOT
 export interface FactValue {
   state: FactStateName;
   value?: number | null;
+  /** Where the fact came from: profile, answer, rules, llm, correction. */
+  source?: string;
 }
 
 export type FactMap = Record<string, FactValue>;

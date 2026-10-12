@@ -92,7 +92,7 @@ export function applyObservations(bundle: BundleContent, facts: FactMap, observa
     const current = facts[o.factKey];
     if (current?.state === 'PRESENT' && o.state === 'ABSENT' && bundle.facts[o.factKey]?.critical) continue;
     if (current?.state === o.state && (current.value ?? null) === (o.value ?? null)) continue;
-    changes[o.factKey] = { state: o.state, value: o.value ?? null };
+    changes[o.factKey] = { state: o.state, value: o.value ?? null, source: o.source };
   }
   return changes;
 }

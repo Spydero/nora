@@ -83,9 +83,9 @@ stateDiagram-v2
   tools --> research: ≤ N rounds
   research --> ensure_evidence
   ensure_evidence --> decide: rank approved candidates
-  decide --> draft
-  draft --> verify
-  verify --> draft: issues (retry)
+  decide --> compose_draft
+  compose_draft --> verify
+  verify --> compose_draft: issues (retry)
   verify --> fallback: retries exhausted
   verify --> finalize
   fallback --> finalize
