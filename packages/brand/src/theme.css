@@ -1,0 +1,78 @@
+/*
+ * Nora semantic tokens for Tailwind CSS v4. Values must match src/tokens.ts;
+ * `pnpm --filter @nora/brand test` fails if they drift.
+ */
+@theme {
+  --font-sans: 'Inter Variable', Inter, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+
+  --color-brand-navy: #142B45;
+  --color-brand-teal: #087F8C;
+  --color-brand-teal-hover: #066B76;
+  --color-brand-cyan: #16C4D5;
+
+  --color-fg: #172B3A;
+  --color-fg-muted: #526477;
+  --color-fg-inverse: #FFFFFF;
+
+  --color-canvas: #F5F8FA;
+  --color-panel: #FFFFFF;
+  --color-subtle: #EEF3F6;
+
+  --color-line: #D6E0E7;
+  --color-line-strong: #A9B8C4;
+
+  --color-focus: #2457C5;
+
+  --color-success: #166534;
+  --color-success-bg: #ECFDF3;
+  --color-warning: #8A4B00;
+  --color-warning-bg: #FFF7E6;
+  --color-danger: #B42318;
+  --color-danger-bg: #FEF3F2;
+  --color-info: #1D4E89;
+  --color-info-bg: #EFF6FF;
+
+  --text-page-title: 28px;
+  --text-page-title--line-height: 36px;
+  --text-panel-title: 18px;
+  --text-panel-title--line-height: 26px;
+  --text-card-title: 16px;
+  --text-card-title--line-height: 24px;
+  --text-body: 16px;
+  --text-body--line-height: 24px;
+  --text-secondary: 14px;
+  --text-secondary--line-height: 20px;
+  --text-meta: 12px;
+  --text-meta--line-height: 18px;
+
+  --radius-control: 8px;
+  --radius-card: 12px;
+  --radius-panel: 16px;
+
+  --shadow-overlay: 0 8px 24px rgb(20 43 69 / 0.12);
+}
+
+@layer base {
+  html {
+    color: var(--color-fg);
+    background-color: var(--color-canvas);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--color-focus);
+    outline-offset: 2px;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+}

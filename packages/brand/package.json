@@ -1,0 +1,20 @@
+{
+  "name": "@nora/brand",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Nora design tokens, theme stylesheet and logo assets",
+  "exports": {
+    ".": "./src/index.ts",
+    "./theme.css": "./src/theme.css",
+    "./assets/*": "./assets/*"
+  },
+  "scripts": {
+    "test": "node --test src/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^6.0.2"
+  }
+}

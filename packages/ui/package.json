@@ -1,0 +1,24 @@
+{
+  "name": "@nora/ui",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Shared Nora React components built on @nora/brand tokens",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "lucide-react": "^1.55.0"
+  },
+  "peerDependencies": {
+    "react": "^19.0.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19",
+    "react": "19.3.0",
+    "typescript": "^6.0.2"
+  }
+}

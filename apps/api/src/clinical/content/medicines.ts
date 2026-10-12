@@ -1,0 +1,45 @@
+/**
+ * SYNTHETIC medicine education entries. General information only — no dosing,
+ * and never a recommendation to start, stop or change a medicine.
+ */
+export interface MedicineSeed {
+  slug: string;
+  genericName: string;
+  brandNames: string[];
+  drugClass: string;
+  uses: string;
+  commonSideEffects: string[];
+  seriousWarnings: string[];
+  askClinicianIf: string[];
+  otc: boolean;
+}
+
+const ask = ['you are pregnant or breastfeeding', 'you take other regular medicines', 'you have kidney, liver or heart problems'];
+
+export const demoMedicines: MedicineSeed[] = [
+  { slug: 'paracetamol', genericName: 'Paracetamol', brandNames: ['Crocin', 'Dolo', 'Calpol'], drugClass: 'Analgesic / antipyretic', uses: 'Relief of mild to moderate pain and fever.', commonSideEffects: ['Generally well tolerated at recommended doses'], seriousWarnings: ['Taking more than the labelled amount can cause serious liver damage', 'Many combination cold products also contain paracetamol'], askClinicianIf: [...ask, 'you drink alcohol regularly'], otc: true },
+  { slug: 'ibuprofen', genericName: 'Ibuprofen', brandNames: ['Brufen', 'Ibugesic'], drugClass: 'NSAID', uses: 'Pain, inflammation and fever.', commonSideEffects: ['Indigestion', 'Nausea'], seriousWarnings: ['Can cause stomach bleeding', 'Can worsen asthma in some people', 'Can affect kidney function'], askClinicianIf: [...ask, 'you have had stomach ulcers or asthma'], otc: true },
+  { slug: 'diclofenac', genericName: 'Diclofenac', brandNames: ['Voveran'], drugClass: 'NSAID', uses: 'Pain and inflammation, including back and joint pain.', commonSideEffects: ['Indigestion', 'Headache'], seriousWarnings: ['Stomach bleeding risk', 'Increased heart and stroke risk with long use'], askClinicianIf: [...ask, 'you have heart disease or high blood pressure'], otc: false },
+  { slug: 'cetirizine', genericName: 'Cetirizine', brandNames: ['Cetzine', 'Alerid'], drugClass: 'Antihistamine', uses: 'Allergy symptoms such as sneezing, runny nose and itching.', commonSideEffects: ['Drowsiness', 'Dry mouth'], seriousWarnings: ['Avoid driving if drowsy'], askClinicianIf: ask, otc: true },
+  { slug: 'levocetirizine', genericName: 'Levocetirizine', brandNames: ['Levocet', 'Xyzal'], drugClass: 'Antihistamine', uses: 'Allergic rhinitis and hives.', commonSideEffects: ['Drowsiness', 'Fatigue'], seriousWarnings: ['May impair driving'], askClinicianIf: ask, otc: true },
+  { slug: 'pantoprazole', genericName: 'Pantoprazole', brandNames: ['Pan', 'Pantocid'], drugClass: 'Proton pump inhibitor', uses: 'Acidity, reflux and stomach ulcers.', commonSideEffects: ['Headache', 'Diarrhoea'], seriousWarnings: ['Long-term use should be reviewed by a doctor'], askClinicianIf: ask, otc: false },
+  { slug: 'omeprazole', genericName: 'Omeprazole', brandNames: ['Omez'], drugClass: 'Proton pump inhibitor', uses: 'Acid reflux, heartburn and ulcers.', commonSideEffects: ['Headache', 'Abdominal pain'], seriousWarnings: ['Interacts with some medicines such as clopidogrel'], askClinicianIf: ask, otc: false },
+  { slug: 'ors', genericName: 'Oral rehydration salts', brandNames: ['Electral'], drugClass: 'Rehydration', uses: 'Preventing and treating dehydration from diarrhoea or vomiting.', commonSideEffects: ['Rarely, vomiting if taken too quickly'], seriousWarnings: ['Mix exactly as directed on the packet'], askClinicianIf: ['you have kidney or heart failure'], otc: true },
+  { slug: 'domperidone', genericName: 'Domperidone', brandNames: ['Domstal'], drugClass: 'Antiemetic', uses: 'Nausea and vomiting.', commonSideEffects: ['Dry mouth', 'Headache'], seriousWarnings: ['Can affect heart rhythm in some people'], askClinicianIf: [...ask, 'you have a heart rhythm problem'], otc: false },
+  { slug: 'ondansetron', genericName: 'Ondansetron', brandNames: ['Emeset', 'Vomikind'], drugClass: 'Antiemetic', uses: 'Nausea and vomiting.', commonSideEffects: ['Constipation', 'Headache'], seriousWarnings: ['Can affect heart rhythm'], askClinicianIf: ask, otc: false },
+  { slug: 'amoxicillin', genericName: 'Amoxicillin', brandNames: ['Mox', 'Novamox'], drugClass: 'Penicillin antibiotic', uses: 'Bacterial infections, when prescribed by a clinician.', commonSideEffects: ['Diarrhoea', 'Nausea', 'Rash'], seriousWarnings: ['Do not take if allergic to penicillin', 'Antibiotics do not work for viral infections'], askClinicianIf: [...ask, 'you have had a reaction to penicillin'], otc: false },
+  { slug: 'azithromycin', genericName: 'Azithromycin', brandNames: ['Azithral', 'Azee'], drugClass: 'Macrolide antibiotic', uses: 'Certain bacterial infections, when prescribed.', commonSideEffects: ['Diarrhoea', 'Stomach upset'], seriousWarnings: ['Can affect heart rhythm', 'Only use when prescribed'], askClinicianIf: ask, otc: false },
+  { slug: 'nitrofurantoin', genericName: 'Nitrofurantoin', brandNames: ['Niftran'], drugClass: 'Urinary antibiotic', uses: 'Bladder infections, when prescribed.', commonSideEffects: ['Nausea', 'Dark urine'], seriousWarnings: ['Not suitable with reduced kidney function'], askClinicianIf: ask, otc: false },
+  { slug: 'metformin', genericName: 'Metformin', brandNames: ['Glycomet', 'Glucophage'], drugClass: 'Biguanide (diabetes)', uses: 'Type 2 diabetes.', commonSideEffects: ['Stomach upset', 'Diarrhoea'], seriousWarnings: ['Rarely causes lactic acidosis; may need pausing during severe illness or dehydration — ask your doctor'], askClinicianIf: ask, otc: false },
+  { slug: 'amlodipine', genericName: 'Amlodipine', brandNames: ['Amlong', 'Stamlo'], drugClass: 'Calcium channel blocker', uses: 'High blood pressure and angina.', commonSideEffects: ['Ankle swelling', 'Flushing', 'Headache'], seriousWarnings: ['Do not stop suddenly without advice'], askClinicianIf: ask, otc: false },
+  { slug: 'telmisartan', genericName: 'Telmisartan', brandNames: ['Telma'], drugClass: 'Angiotensin receptor blocker', uses: 'High blood pressure.', commonSideEffects: ['Dizziness', 'Back pain'], seriousWarnings: ['Not for use in pregnancy', 'Can raise potassium levels'], askClinicianIf: ask, otc: false },
+  { slug: 'atorvastatin', genericName: 'Atorvastatin', brandNames: ['Atorva', 'Lipitor'], drugClass: 'Statin', uses: 'Lowering cholesterol and cardiovascular risk.', commonSideEffects: ['Muscle aches', 'Headache'], seriousWarnings: ['Report unexplained muscle pain or weakness'], askClinicianIf: ask, otc: false },
+  { slug: 'aspirin-low-dose', genericName: 'Aspirin (low dose)', brandNames: ['Ecosprin'], drugClass: 'Antiplatelet', uses: 'Preventing blood clots, when prescribed.', commonSideEffects: ['Indigestion', 'Easy bruising'], seriousWarnings: ['Bleeding risk, including stomach bleeding'], askClinicianIf: [...ask, 'you take other blood thinners'], otc: false },
+  { slug: 'levothyroxine', genericName: 'Levothyroxine', brandNames: ['Thyronorm', 'Eltroxin'], drugClass: 'Thyroid hormone', uses: 'Underactive thyroid.', commonSideEffects: ['Usually none at the right dose'], seriousWarnings: ['Palpitations or chest pain can mean the dose is too high'], askClinicianIf: ask, otc: false },
+  { slug: 'salbutamol-inhaler', genericName: 'Salbutamol inhaler', brandNames: ['Asthalin'], drugClass: 'Short-acting bronchodilator', uses: 'Relief of wheeze and breathlessness in asthma or COPD.', commonSideEffects: ['Tremor', 'Fast heartbeat'], seriousWarnings: ['Needing it more often than usual means asthma is poorly controlled — seek review'], askClinicianIf: ask, otc: false },
+  { slug: 'montelukast', genericName: 'Montelukast', brandNames: ['Montair'], drugClass: 'Leukotriene receptor antagonist', uses: 'Asthma and allergic rhinitis.', commonSideEffects: ['Headache', 'Stomach pain'], seriousWarnings: ['Report mood changes or sleep disturbance'], askClinicianIf: ask, otc: false },
+  { slug: 'sertraline', genericName: 'Sertraline', brandNames: ['Serta', 'Daxid'], drugClass: 'SSRI antidepressant', uses: 'Depression and anxiety disorders.', commonSideEffects: ['Nausea', 'Sleep changes'], seriousWarnings: ['Do not stop suddenly', 'Seek help for worsening mood or thoughts of self-harm'], askClinicianIf: ask, otc: false },
+  { slug: 'oral-contraceptive', genericName: 'Combined oral contraceptive', brandNames: ['Ovral L'], drugClass: 'Hormonal contraceptive', uses: 'Contraception and some menstrual conditions.', commonSideEffects: ['Nausea', 'Breast tenderness'], seriousWarnings: ['Small increased risk of blood clots'], askClinicianIf: ask, otc: false },
+  { slug: 'iron-folic-acid', genericName: 'Iron and folic acid', brandNames: ['Livogen'], drugClass: 'Supplement', uses: 'Iron-deficiency anaemia and pregnancy supplementation.', commonSideEffects: ['Constipation', 'Dark stools'], seriousWarnings: ['Keep out of reach of children — overdose is dangerous'], askClinicianIf: ask, otc: true },
+  { slug: 'vitamin-d3', genericName: 'Cholecalciferol (vitamin D3)', brandNames: ['Uprise D3', 'Calcirol'], drugClass: 'Vitamin', uses: 'Vitamin D deficiency.', commonSideEffects: ['Usually none'], seriousWarnings: ['High doses over long periods can raise calcium levels'], askClinicianIf: ask, otc: true },
+];

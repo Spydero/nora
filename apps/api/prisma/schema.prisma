@@ -1,0 +1,757 @@
+generator client {
+  provider            = "prisma-client"
+  output              = "../src/generated/prisma"
+  moduleFormat        = "esm"
+  importFileExtension = "js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum TenantStatus {
+  PROVISIONING
+  ACTIVE
+  SUSPENDED
+  OFFBOARDING
+}
+
+enum UserStatus {
+  ACTIVE
+  DISABLED
+}
+
+enum MembershipStatus {
+  ACTIVE
+  REVOKED
+}
+
+/// PRD 3.2 personas. Tenant administrator status never implies patient record access.
+enum Role {
+  PATIENT
+  CLINICIAN
+  CARE_COORDINATOR
+  TENANT_ADMIN
+  CLINICAL_CONTENT_EDITOR
+  CLINICAL_APPROVER
+  PLATFORM_OPERATOR
+}
+
+enum AccessOutcome {
+  SUCCESS
+  FAILURE
+}
+
+model Tenant {
+  id               String       @id @default(uuid()) @db.Uuid
+  slug             String       @unique
+  name             String
+  region           String
+  status           TenantStatus @default(PROVISIONING)
+  /// Enabled product capabilities (F24). Unknown capabilities are disabled.
+  capabilities     String[]
+  /// Approved theme overrides, emergency contact, time zone, currency and locale.
+  settings         Json         @default("{}")
+  activeBundleId   String?      @map("active_bundle_id") @db.Uuid
+  domainVerifiedAt DateTime?    @map("domain_verified_at")
+  createdAt        DateTime     @default(now()) @map("created_at")
+  updatedAt        DateTime     @updatedAt @map("updated_at")
+  memberships      Membership[]
+
+  @@map("tenants")
+}
+
+model User {
+  id           String       @id @default(uuid()) @db.Uuid
+  email        String       @unique @db.Citext
+  passwordHash String       @map("password_hash")
+  displayName  String       @map("display_name")
+  status       UserStatus   @default(ACTIVE)
+  createdAt    DateTime     @default(now()) @map("created_at")
+  updatedAt    DateTime     @updatedAt @map("updated_at")
+  memberships  Membership[]
+  sessions     Session[]
+
+  @@map("users")
+}
+
+model Membership {
+  id        String           @id @default(uuid()) @db.Uuid
+  tenantId  String           @map("tenant_id") @db.Uuid
+  userId    String           @map("user_id") @db.Uuid
+  roles     Role[]
+  status    MembershipStatus @default(ACTIVE)
+  createdAt DateTime         @default(now()) @map("created_at")
+  updatedAt DateTime         @updatedAt @map("updated_at")
+  tenant    Tenant           @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  user      User             @relation(fields: [userId], references: [id], onDelete: Restrict)
+  sessions  Session[]
+
+  @@unique([tenantId, userId])
+  @@index([userId])
+  @@map("memberships")
+}
+
+/// One sign-in. Access tokens carry the session ID so revocation is checked on every request.
+model Session {
+  id            String         @id @default(uuid()) @db.Uuid
+  userId        String         @map("user_id") @db.Uuid
+  membershipId  String         @map("membership_id") @db.Uuid
+  userAgent     String?        @map("user_agent")
+  ipAddress     String?        @map("ip_address")
+  createdAt     DateTime       @default(now()) @map("created_at")
+  lastSeenAt    DateTime       @default(now()) @map("last_seen_at")
+  expiresAt     DateTime       @map("expires_at")
+  revokedAt     DateTime?      @map("revoked_at")
+  revokedReason String?        @map("revoked_reason")
+  user          User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  membership    Membership     @relation(fields: [membershipId], references: [id], onDelete: Cascade)
+  refreshTokens RefreshToken[]
+
+  @@index([userId])
+  @@index([membershipId])
+  @@map("sessions")
+}
+
+/// Opaque refresh tokens, stored only as SHA-256 hashes and rotated on every use.
+model RefreshToken {
+  id        String    @id @default(uuid()) @db.Uuid
+  sessionId String    @map("session_id") @db.Uuid
+  tokenHash String    @unique @map("token_hash")
+  expiresAt DateTime  @map("expires_at")
+  usedAt    DateTime? @map("used_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+  session   Session   @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId])
+  @@map("refresh_tokens")
+}
+
+/// Authentication audit trail (F01 AccessEvent). Never stores credentials or clinical content.
+model AccessEvent {
+  id            String        @id @default(uuid()) @db.Uuid
+  tenantId      String?       @map("tenant_id") @db.Uuid
+  userId        String?       @map("user_id") @db.Uuid
+  sessionId     String?       @map("session_id") @db.Uuid
+  action        String
+  outcome       AccessOutcome
+  reason        String?
+  ipAddress     String?       @map("ip_address")
+  correlationId String?       @map("correlation_id")
+  createdAt     DateTime      @default(now()) @map("created_at")
+
+  @@index([tenantId, createdAt])
+  @@index([userId, createdAt])
+  @@map("access_events")
+}
+
+// ───────────────────────────── Platform operations (F30) ─────────────────────────────
+
+/// Platform-wide kill switches. A disabled flag overrides every tenant capability.
+model PlatformFlag {
+  key         String   @id
+  enabled     Boolean  @default(true)
+  reason      String?
+  updatedById String?  @map("updated_by_id") @db.Uuid
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@map("platform_flags")
+}
+
+/// Durable work queue (PRD 5.3). Handlers must be idempotent; jobs may run more than once.
+model OutboxJob {
+  id            String    @id @default(uuid()) @db.Uuid
+  tenantId      String    @map("tenant_id") @db.Uuid
+  type          String
+  resourceId    String    @map("resource_id") @db.Uuid
+  payload       Json      @default("{}")
+  status        String    @default("PENDING")
+  attempts      Int       @default(0)
+  runAfter      DateTime  @default(now()) @map("run_after")
+  lockedAt      DateTime? @map("locked_at")
+  lastError     String?   @map("last_error")
+  correlationId String?   @map("correlation_id")
+  createdAt     DateTime  @default(now()) @map("created_at")
+  completedAt   DateTime? @map("completed_at")
+
+  @@index([status, runAfter])
+  @@map("outbox_jobs")
+}
+
+// ───────────────────────────── Consent and profile (F02) ─────────────────────────────
+
+enum ConsentPurpose {
+  PROCESSING
+  CLINICIAN_SHARING
+  VOICE
+  ANALYTICS
+}
+
+enum ConsentAction {
+  GRANTED
+  WITHDRAWN
+}
+
+model NoticeVersion {
+  id          String          @id @default(uuid()) @db.Uuid
+  tenantId    String?         @map("tenant_id") @db.Uuid
+  purpose     ConsentPurpose
+  version     String
+  title       String
+  body        String
+  required    Boolean         @default(false)
+  publishedAt DateTime        @default(now()) @map("published_at")
+  retiredAt   DateTime?       @map("retired_at")
+  consents    ConsentRecord[]
+
+  @@unique([tenantId, purpose, version])
+  @@map("notice_versions")
+}
+
+/// Append-only consent history. Current state is the latest record per subject and purpose.
+model ConsentRecord {
+  id              String         @id @default(uuid()) @db.Uuid
+  tenantId        String         @map("tenant_id") @db.Uuid
+  subjectUserId   String         @map("subject_user_id") @db.Uuid
+  actorUserId     String         @map("actor_user_id") @db.Uuid
+  purpose         ConsentPurpose
+  action          ConsentAction
+  noticeVersionId String         @map("notice_version_id") @db.Uuid
+  createdAt       DateTime       @default(now()) @map("created_at")
+  notice          NoticeVersion  @relation(fields: [noticeVersionId], references: [id])
+
+  @@index([tenantId, subjectUserId, purpose, createdAt])
+  @@map("consent_records")
+}
+
+model PatientProfile {
+  id                String           @id @default(uuid()) @db.Uuid
+  tenantId          String           @map("tenant_id") @db.Uuid
+  userId            String           @map("user_id") @db.Uuid
+  version           Int              @default(1)
+  dateOfBirth       DateTime?        @map("date_of_birth") @db.Date
+  sexAtBirth        String           @default("UNKNOWN") @map("sex_at_birth")
+  pregnancyStatus   String           @default("UNKNOWN") @map("pregnancy_status")
+  /// Each list is { state: "known" | "none" | "unknown" | "declined", items: string[] }.
+  conditions        Json             @default("{\"state\":\"unknown\",\"items\":[]}")
+  medications       Json             @default("{\"state\":\"unknown\",\"items\":[]}")
+  allergies         Json             @default("{\"state\":\"unknown\",\"items\":[]}")
+  city              String?
+  preferredLanguage String           @default("en") @map("preferred_language")
+  updatedAt         DateTime         @updatedAt @map("updated_at")
+  createdAt         DateTime         @default(now()) @map("created_at")
+  versions          ProfileVersion[]
+
+  @@unique([tenantId, userId])
+  @@map("patient_profiles")
+}
+
+model ProfileVersion {
+  id          String         @id @default(uuid()) @db.Uuid
+  profileId   String         @map("profile_id") @db.Uuid
+  version     Int
+  data        Json
+  actorUserId String         @map("actor_user_id") @db.Uuid
+  source      String
+  createdAt   DateTime       @default(now()) @map("created_at")
+  profile     PatientProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+
+  @@unique([profileId, version])
+  @@map("profile_versions")
+}
+
+// ───────────────────────────── Clinical content (F23, F11) ─────────────────────────────
+
+enum BundleStatus {
+  DRAFT
+  REVIEW_REQUESTED
+  APPROVED
+  EVALUATED
+  STAGED
+  RELEASED
+  RETIRED
+}
+
+/// Versioned clinical content: scope, question graph, urgency rules, explanations and care templates.
+model ClinicalBundle {
+  id            String       @id @default(uuid()) @db.Uuid
+  tenantId      String?      @map("tenant_id") @db.Uuid
+  version       String
+  status        BundleStatus @default(DRAFT)
+  schemaVersion String       @default("1") @map("schema_version")
+  content       Json
+  changeNote    String?      @map("change_note")
+  authorId      String       @map("author_id") @db.Uuid
+  approverId    String?      @map("approver_id") @db.Uuid
+  approvedAt    DateTime?    @map("approved_at")
+  evaluation    Json?
+  evaluatedAt   DateTime?    @map("evaluated_at")
+  releasedAt    DateTime?    @map("released_at")
+  retiredAt     DateTime?    @map("retired_at")
+  createdAt     DateTime     @default(now()) @map("created_at")
+  updatedAt     DateTime     @updatedAt @map("updated_at")
+
+  @@unique([tenantId, version])
+  @@map("clinical_bundles")
+}
+
+enum SourceStatus {
+  DRAFT
+  APPROVED
+  EXPIRED
+  REVOKED
+}
+
+/// One version of an approved knowledge source. A new version is a new row; history stays resolvable.
+model KnowledgeDocument {
+  id           String           @id @default(uuid()) @db.Uuid
+  tenantId     String?          @map("tenant_id") @db.Uuid
+  sourceKey    String           @map("source_key")
+  version      Int              @default(1)
+  title        String
+  publisher    String
+  jurisdiction String
+  url          String?
+  licence      String
+  publishedAt  DateTime         @map("published_at")
+  reviewedAt   DateTime         @map("reviewed_at")
+  reviewDueAt  DateTime         @map("review_due_at")
+  concernCodes String[]         @map("concern_codes")
+  status       SourceStatus     @default(DRAFT)
+  createdAt    DateTime         @default(now()) @map("created_at")
+  chunks       KnowledgeChunk[]
+
+  @@unique([tenantId, sourceKey, version])
+  @@map("knowledge_documents")
+}
+
+model KnowledgeChunk {
+  id             String                 @id @default(uuid()) @db.Uuid
+  documentId     String                 @map("document_id") @db.Uuid
+  ordinal        Int
+  heading        String?
+  text           String
+  embedding      Unsupported("vector")?
+  embeddingModel String?                @map("embedding_model")
+  document       KnowledgeDocument      @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  evidenceLinks  EvidenceLink[]
+
+  @@unique([documentId, ordinal])
+  @@map("knowledge_chunks")
+}
+
+// ───────────────────────────── Checks and assessment (F03–F13) ─────────────────────────────
+
+enum CheckStatus {
+  DRAFT
+  COLLECTING
+  AWAITING_CONFIRMATION
+  ASSESSING
+  COMPLETED
+  INCOMPLETE
+  ESCALATED
+  ARCHIVED
+}
+
+enum FactState {
+  PRESENT
+  ABSENT
+  UNKNOWN
+  DECLINED
+  NOT_ASKED
+}
+
+model AssessmentSession {
+  id                String             @id @default(uuid()) @db.Uuid
+  tenantId          String             @map("tenant_id") @db.Uuid
+  patientUserId     String             @map("patient_user_id") @db.Uuid
+  status            CheckStatus        @default(DRAFT)
+  concernCode       String?            @map("concern_code")
+  bundleId          String             @map("bundle_id") @db.Uuid
+  inputVersion      Int                @default(0) @map("input_version")
+  version           Int                @default(0)
+  turnCount         Int                @default(0) @map("turn_count")
+  urgency           String?
+  pendingQuestionId String?            @map("pending_question_id")
+  currentResultId   String?            @map("current_result_id") @db.Uuid
+  parentSessionId   String?            @map("parent_session_id") @db.Uuid
+  idempotencyKey    String             @map("idempotency_key")
+  title             String?
+  createdAt         DateTime           @default(now()) @map("created_at")
+  updatedAt         DateTime           @updatedAt @map("updated_at")
+  messages          Message[]
+  facts             CaseFact[]
+  answers           Answer[]
+  events            SessionEvent[]
+  results           AssessmentResult[]
+  urgencyDecisions  UrgencyDecision[]
+
+  @@unique([tenantId, patientUserId, idempotencyKey])
+  @@index([tenantId, patientUserId, createdAt])
+  @@map("assessment_sessions")
+}
+
+model Message {
+  id             String            @id @default(uuid()) @db.Uuid
+  sessionId      String            @map("session_id") @db.Uuid
+  sender         String
+  kind           String
+  text           String
+  questionId     String?           @map("question_id")
+  inputVersion   Int               @map("input_version")
+  idempotencyKey String?           @map("idempotency_key")
+  createdAt      DateTime          @default(now()) @map("created_at")
+  session        AssessmentSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@unique([sessionId, idempotencyKey])
+  @@index([sessionId, createdAt])
+  @@map("messages")
+}
+
+/// Structured case fact. Superseded rows are retained for provenance.
+model CaseFact {
+  id              String            @id @default(uuid()) @db.Uuid
+  sessionId       String            @map("session_id") @db.Uuid
+  key             String
+  state           FactState
+  value           Json?
+  source          String
+  sourceMessageId String?           @map("source_message_id") @db.Uuid
+  quote           String?
+  assertion       String?
+  confirmed       Boolean           @default(false)
+  inputVersion    Int               @map("input_version")
+  supersededAt    DateTime?         @map("superseded_at")
+  createdAt       DateTime          @default(now()) @map("created_at")
+  session         AssessmentSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId, key])
+  @@map("case_facts")
+}
+
+model Answer {
+  id           String            @id @default(uuid()) @db.Uuid
+  sessionId    String            @map("session_id") @db.Uuid
+  questionId   String            @map("question_id")
+  state        FactState
+  value        Json?
+  inputVersion Int               @map("input_version")
+  supersededAt DateTime?         @map("superseded_at")
+  createdAt    DateTime          @default(now()) @map("created_at")
+  session      AssessmentSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId, questionId])
+  @@map("answers")
+}
+
+/// Display-safe stage events streamed to the browser with a monotonic sequence.
+model SessionEvent {
+  sequence  BigInt            @id @default(autoincrement())
+  sessionId String            @map("session_id") @db.Uuid
+  type      String
+  payload   Json              @default("{}")
+  createdAt DateTime          @default(now()) @map("created_at")
+  session   AssessmentSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId, sequence])
+  @@map("session_events")
+}
+
+model UrgencyDecision {
+  id           String            @id @default(uuid()) @db.Uuid
+  sessionId    String            @map("session_id") @db.Uuid
+  inputVersion Int               @map("input_version")
+  level        String
+  ruleIds      String[]          @map("rule_ids")
+  bundleId     String            @map("bundle_id") @db.Uuid
+  source       String            @default("RULES")
+  reason       String?
+  actorUserId  String?           @map("actor_user_id") @db.Uuid
+  createdAt    DateTime          @default(now()) @map("created_at")
+  session      AssessmentSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId, createdAt])
+  @@map("urgency_decisions")
+}
+
+/// Immutable once persisted. Corrections create a new result and supersede this one.
+model AssessmentResult {
+  id               String                @id @default(uuid()) @db.Uuid
+  sessionId        String                @map("session_id") @db.Uuid
+  tenantId         String                @map("tenant_id") @db.Uuid
+  inputVersion     Int                   @map("input_version")
+  inputHash        String                @map("input_hash")
+  bundleId         String                @map("bundle_id") @db.Uuid
+  schemaVersion    String                @map("schema_version")
+  status           String
+  urgency          String
+  generator        String
+  model            String?
+  promptVersion    String?               @map("prompt_version")
+  content          Json
+  supersededAt     DateTime?             @map("superseded_at")
+  reviewStatus     String                @default("UNREVIEWED") @map("review_status")
+  latencyMs        Int?                  @map("latency_ms")
+  usage            Json?
+  createdAt        DateTime              @default(now()) @map("created_at")
+  session          AssessmentSession     @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  evidenceLinks    EvidenceLink[]
+  acknowledgements TaskAcknowledgement[]
+
+  @@index([sessionId, createdAt])
+  @@map("assessment_results")
+}
+
+model EvidenceLink {
+  id         String           @id @default(uuid()) @db.Uuid
+  resultId   String           @map("result_id") @db.Uuid
+  chunkId    String           @map("chunk_id") @db.Uuid
+  documentId String           @map("document_id") @db.Uuid
+  citationId String           @map("citation_id")
+  result     AssessmentResult @relation(fields: [resultId], references: [id], onDelete: Cascade)
+  chunk      KnowledgeChunk   @relation(fields: [chunkId], references: [id], onDelete: Restrict)
+
+  @@unique([resultId, citationId])
+  @@map("evidence_links")
+}
+
+/// Logistical completion only; never alters clinical urgency (F12 AC02).
+model TaskAcknowledgement {
+  id             String           @id @default(uuid()) @db.Uuid
+  resultId       String           @map("result_id") @db.Uuid
+  itemId         String           @map("item_id")
+  userId         String           @map("user_id") @db.Uuid
+  acknowledgedAt DateTime         @default(now()) @map("acknowledged_at")
+  result         AssessmentResult @relation(fields: [resultId], references: [id], onDelete: Cascade)
+
+  @@unique([resultId, itemId])
+  @@map("task_acknowledgements")
+}
+
+// ───────────────────────────── Clinician review (F22) ─────────────────────────────
+
+model ReviewTask {
+  id         String             @id @default(uuid()) @db.Uuid
+  tenantId   String             @map("tenant_id") @db.Uuid
+  sessionId  String             @map("session_id") @db.Uuid
+  resultId   String             @map("result_id") @db.Uuid
+  reason     String
+  status     String             @default("QUEUED")
+  assigneeId String?            @map("assignee_id") @db.Uuid
+  version    Int                @default(0)
+  dueAt      DateTime           @map("due_at")
+  createdAt  DateTime           @default(now()) @map("created_at")
+  updatedAt  DateTime           @updatedAt @map("updated_at")
+  decisions  ClinicalDecision[]
+
+  @@unique([resultId])
+  @@index([tenantId, status, dueAt])
+  @@map("review_tasks")
+}
+
+model ClinicalDecision {
+  id               String     @id @default(uuid()) @db.Uuid
+  reviewTaskId     String     @map("review_task_id") @db.Uuid
+  resultId         String     @map("result_id") @db.Uuid
+  clinicianId      String     @map("clinician_id") @db.Uuid
+  decision         String
+  reason           String
+  correctedUrgency String?    @map("corrected_urgency")
+  patientNote      String?    @map("patient_note")
+  createdAt        DateTime   @default(now()) @map("created_at")
+  task             ReviewTask @relation(fields: [reviewTaskId], references: [id], onDelete: Cascade)
+
+  @@map("clinical_decisions")
+}
+
+// ───────────────────────────── Providers and handoff (F16, F17, F21) ─────────────────────────────
+
+model Clinic {
+  id        String     @id @default(uuid()) @db.Uuid
+  tenantId  String     @map("tenant_id") @db.Uuid
+  name      String
+  address   String
+  city      String
+  latitude  Float?
+  longitude Float?
+  phone     String?
+  providers Provider[]
+
+  @@index([tenantId, city])
+  @@map("clinics")
+}
+
+model Provider {
+  id                  String    @id @default(uuid()) @db.Uuid
+  tenantId            String    @map("tenant_id") @db.Uuid
+  clinicId            String    @map("clinic_id") @db.Uuid
+  externalRef         String    @map("external_ref")
+  name                String
+  title               String
+  specialties         String[]
+  languages           String[]
+  qualifications      String[]
+  registrationNumber  String    @map("registration_number")
+  status              String    @default("DRAFT")
+  verifiedAt          DateTime? @map("verified_at")
+  verifiedById        String?   @map("verified_by_id") @db.Uuid
+  credentialExpiresAt DateTime? @map("credential_expires_at")
+  bookingMethod       String    @map("booking_method")
+  bookingUrl          String?   @map("booking_url")
+  bookingPhone        String?   @map("booking_phone")
+  consultationModes   String[]  @map("consultation_modes")
+  feeAmount           Int       @map("fee_amount")
+  currency            String
+  accessibility       String[]
+  nextAvailableAt     DateTime? @map("next_available_at")
+  scheduleUpdatedAt   DateTime? @map("schedule_updated_at")
+  bio                 String?
+  createdAt           DateTime  @default(now()) @map("created_at")
+  updatedAt           DateTime  @updatedAt @map("updated_at")
+  clinic              Clinic    @relation(fields: [clinicId], references: [id])
+
+  @@unique([tenantId, externalRef])
+  @@index([tenantId, status])
+  @@map("providers")
+}
+
+model ImportJob {
+  id        String   @id @default(uuid()) @db.Uuid
+  tenantId  String   @map("tenant_id") @db.Uuid
+  actorId   String   @map("actor_id") @db.Uuid
+  kind      String
+  status    String
+  rowCount  Int      @map("row_count")
+  errors    Json     @default("[]")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@map("import_jobs")
+}
+
+model Referral {
+  id            String                       @id @default(uuid()) @db.Uuid
+  tenantId      String                       @map("tenant_id") @db.Uuid
+  patientUserId String                       @map("patient_user_id") @db.Uuid
+  sessionId     String?                      @map("session_id") @db.Uuid
+  resultId      String?                      @map("result_id") @db.Uuid
+  providerId    String                       @map("provider_id") @db.Uuid
+  specialty     String?
+  status        String                       @default("HANDOFF_OPENED")
+  createdAt     DateTime                     @default(now()) @map("created_at")
+  appointments  PatientReportedAppointment[]
+
+  @@index([tenantId, patientUserId])
+  @@map("referrals")
+}
+
+/// Recorded by the patient. Never displayed as provider confirmed (F17 AC01).
+model PatientReportedAppointment {
+  id            String    @id @default(uuid()) @db.Uuid
+  tenantId      String    @map("tenant_id") @db.Uuid
+  patientUserId String    @map("patient_user_id") @db.Uuid
+  referralId    String?   @map("referral_id") @db.Uuid
+  providerId    String    @map("provider_id") @db.Uuid
+  scheduledAt   DateTime  @map("scheduled_at")
+  timeZone      String    @map("time_zone")
+  notes         String?
+  status        String    @default("PATIENT_REPORTED")
+  createdAt     DateTime  @default(now()) @map("created_at")
+  referral      Referral? @relation(fields: [referralId], references: [id])
+
+  @@index([tenantId, patientUserId])
+  @@map("patient_reported_appointments")
+}
+
+// ───────────────────────────── Medicines education (F15) ─────────────────────────────
+
+model MedicineEntry {
+  id                String   @id @default(uuid()) @db.Uuid
+  tenantId          String?  @map("tenant_id") @db.Uuid
+  slug              String
+  genericName       String   @map("generic_name")
+  brandExamples     String[] @map("brand_examples")
+  category          String
+  purpose           String
+  commonSideEffects String[] @map("common_side_effects")
+  warnings          String[]
+  askClinicianIf    String[] @map("ask_clinician_if")
+  otc               Boolean  @default(false)
+  sourceDocumentId  String?  @map("source_document_id") @db.Uuid
+  reviewedAt        DateTime @map("reviewed_at")
+
+  @@unique([tenantId, slug])
+  @@map("medicine_entries")
+}
+
+// ───────────────────────────── Audit, privacy, analytics (F25, F26, F28) ─────────────────────────────
+
+/// Attributable record of protected reads and sensitive mutations. Never stores clinical payloads.
+model AuditEvent {
+  id            String   @id @default(uuid()) @db.Uuid
+  tenantId      String?  @map("tenant_id") @db.Uuid
+  actorUserId   String?  @map("actor_user_id") @db.Uuid
+  subjectUserId String?  @map("subject_user_id") @db.Uuid
+  action        String
+  resourceType  String   @map("resource_type")
+  resourceId    String?  @map("resource_id")
+  purpose       String?
+  outcome       String   @default("SUCCESS")
+  correlationId String?  @map("correlation_id")
+  metadata      Json     @default("{}")
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  @@index([tenantId, createdAt])
+  @@index([tenantId, subjectUserId, createdAt])
+  @@map("audit_events")
+}
+
+model PrivacyRequest {
+  id          String    @id @default(uuid()) @db.Uuid
+  tenantId    String    @map("tenant_id") @db.Uuid
+  userId      String    @map("user_id") @db.Uuid
+  type        String
+  status      String    @default("RECEIVED")
+  detail      Json      @default("{}")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  completedAt DateTime? @map("completed_at")
+
+  @@index([tenantId, userId])
+  @@map("privacy_requests")
+}
+
+model LegalHold {
+  id          String    @id @default(uuid()) @db.Uuid
+  tenantId    String    @map("tenant_id") @db.Uuid
+  userId      String    @map("user_id") @db.Uuid
+  reason      String
+  createdById String    @map("created_by_id") @db.Uuid
+  createdAt   DateTime  @default(now()) @map("created_at")
+  releasedAt  DateTime? @map("released_at")
+
+  @@index([tenantId, userId])
+  @@map("legal_holds")
+}
+
+/// Prevents restored backups from reactivating deleted subjects (F26 AC04).
+model DeletionTombstone {
+  id          String   @id @default(uuid()) @db.Uuid
+  tenantId    String   @map("tenant_id") @db.Uuid
+  subjectHash String   @map("subject_hash")
+  deletedAt   DateTime @default(now()) @map("deleted_at")
+
+  @@unique([tenantId, subjectHash])
+  @@map("deletion_tombstones")
+}
+
+/// Allowlisted, identifier-free product events (F28).
+model ProductEvent {
+  id         String   @id @default(uuid()) @db.Uuid
+  tenantId   String   @map("tenant_id") @db.Uuid
+  name       String
+  version    Int      @default(1)
+  properties Json     @default("{}")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@index([tenantId, name, createdAt])
+  @@map("product_events")
+}

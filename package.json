@@ -1,0 +1,25 @@
+{
+  "name": "nora",
+  "private": true,
+  "description": "Nora Enterprise Health Assistant",
+  "packageManager": "pnpm@12.11.2",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "infra:up": "sh scripts/compose.sh up -d --wait postgres redis",
+    "infra:down": "sh scripts/compose.sh down",
+    "infra:logs": "sh scripts/compose.sh logs -f postgres redis",
+    "infra:ps": "sh scripts/compose.sh ps",
+    "stack:up": "sh scripts/compose.sh --profile app up -d --build",
+    "stack:down": "sh scripts/compose.sh --profile app down",
+    "db:migrate": "pnpm --filter @nora/api db:migrate",
+    "db:seed": "pnpm --filter @nora/api db:seed",
+    "dev": "pnpm --parallel --filter @nora/api --filter @nora/web dev",
+    "dev:api": "pnpm --filter @nora/api dev",
+    "dev:web": "pnpm --filter @nora/web dev",
+    "build": "pnpm -r build",
+    "lint": "pnpm -r lint",
+    "typecheck": "pnpm -r typecheck"
+  }
+}

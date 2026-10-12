@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 320" width="1280" height="320" role="img" aria-labelledby="title desc">
+  <title id="title">Nora Health Assistant</title>
+  <desc id="desc">Nora wordmark on navy with the tagline: safe, explainable health guidance for every care journey.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#142B45"/>
+      <stop offset="1" stop-color="#0D1F33"/>
+    </linearGradient>
+    <linearGradient id="path" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#087F8C" stop-opacity="0"/>
+      <stop offset="0.5" stop-color="#16C4D5" stop-opacity="0.55"/>
+      <stop offset="1" stop-color="#087F8C" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+  <rect width="1280" height="320" rx="24" fill="url(#bg)"/>
+
+  <g fill="none" stroke="url(#path)" stroke-width="2" stroke-linecap="round">
+    <path d="M760 250 C 860 250 900 90 1000 90 S 1140 210 1240 170"/>
+    <path d="M760 280 C 880 280 930 130 1030 130 S 1160 240 1260 210" stroke-opacity="0.5"/>
+  </g>
+  <g fill="#16C4D5">
+    <circle cx="1000" cy="90" r="5"/>
+    <circle cx="1240" cy="170" r="4" fill-opacity="0.7"/>
+    <circle cx="1030" cy="130" r="3" fill-opacity="0.5"/>
+  </g>
+
+  <g transform="translate(96 96)">
+    <rect width="128" height="128" rx="32" fill="#FFFFFF" fill-opacity="0.06" stroke="#FFFFFF" stroke-opacity="0.14"/>
+    <path d="M40 88V40l48 48V40" fill="none" stroke="#FFFFFF" stroke-width="12" stroke-linecap="round" stroke-linejoin="round"/>
+    <circle cx="88" cy="40" r="8.5" fill="#16C4D5"/>
+  </g>
+
+  <text x="264" y="168" font-family="Inter, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="76" font-weight="650" letter-spacing="-2" fill="#FFFFFF">Nora</text>
+  <text x="268" y="206" font-family="Inter, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="22" font-weight="500" letter-spacing="3" fill="#16C4D5">HEALTH ASSISTANT</text>
+  <text x="268" y="244" font-family="Inter, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="20" fill="#C9D6E3">Safe, explainable health guidance  rules decide urgency, AI explains with cited evidence.</text>
+</svg>
