@@ -10,7 +10,7 @@ const summary: DoctorSummary = {
   sections: [
     { id: "patient", heading: "Patient", text: "Aarav Sharma, 34 years, male" },
     { id: "symptoms", heading: "Symptoms reported", text: "- Fever — patient’s words: “fever since yesterday”" },
-    { id: "exposures", heading: "Exposures reported (not symptoms)", text: "- Bitten or scratched by an animal — patient’s words: “a dog bit me 5 days ago”" },
+    { id: "exposures", heading: "Exposures reported (not symptoms)", text: "- Bitten or scratched by an animal — 5 days ago — patient’s words: “a dog bit me 5 days ago”" },
     { id: "answers", heading: "Questions Nora asked and the answers given", text: Array.from({ length: 80 }, (_, i) => `- Question ${i + 1} — No`).join("\n") },
     { id: "notes", heading: "Notes", text: "" },
     { id: "disclaimer", heading: "About this summary", text: "It is not a diagnosis." },

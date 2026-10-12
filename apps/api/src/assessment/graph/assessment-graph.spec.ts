@@ -16,13 +16,12 @@ const A = { state: 'ABSENT' as const, source: 'answer' };
 
 const noRedFlags: FactMap = { chest_pain: A, breathless_severe: A, stroke_signs: A, confusion: A, lip_throat_swelling: A, drooling: A };
 
-/** Sore throat with fever, glands and no cough: every question Nora plans is answered, rules say "soon". */
-const strepCase: FactMap = {
+/** A sore throat for over a week with swollen glands and no fever: every question Nora plans is answered, rules say "soon". */
+const throatCase: FactMap = {
   ...noRedFlags,
   sore_throat: P(),
-  duration_days: P(3),
-  fever: P(),
-  temperature_c: P(38.4),
+  duration_days: P(8),
+  fever: A,
   immunocompromised: A,
   diabetes: A,
   cough: A,
@@ -67,7 +66,7 @@ const ranking: Record<string, DecisionAnswer> = {
 };
 
 const goodDraft = {
-  summary: 'You described a sore throat with fever and swollen neck glands for three days. A clinician should check this within the next 24–48 hours.',
+  summary: 'You described a sore throat with swollen neck glands for 8 days. A clinician should check this within the next 24–48 hours.',
   questionsForClinician: ['Do I need a throat swab?'],
   memoryRefs: [],
 };
@@ -84,7 +83,7 @@ describe('assessment graph orchestration', () => {
       decisions: [ranking],
     });
 
-    const out = await runAssessment(deps, input(strepCase));
+    const out = await runAssessment(deps, input(throatCase));
 
     expect(out.outcome).toBe('COMPLETED');
     expect(chat.boundTools).toEqual([...RESEARCH_TOOL_NAMES]);
@@ -97,12 +96,13 @@ describe('assessment graph orchestration', () => {
     const r = out.result!;
     expect(r.generator).toBe('llm');
     expect(r.urgency.level).toBe('soon');
-    expect(r.urgency.reasons.map((x) => x.ruleId)).toContain('r_strep_features');
+    expect(r.urgency.reasons.map((x) => x.ruleId)).toContain('r_sore_throat_long');
     expect(r.explanations).toBeUndefined();
     expect(r.information!.map((i) => i.code)).toEqual(['info_sore_throat']);
     const ids = new Set(r.evidence.map((e) => e.citationId));
     for (const i of r.information!) for (const c of i.citations) expect(ids.has(c)).toBe(true);
-    for (const item of r.carePlan.filter((c) => c.id !== 'ci_soon_gp')) expect(item.citations.length).toBeGreaterThan(0);
+    for (const item of r.carePlan.filter((c) => c.kind !== 'handoff' && c.kind !== 'urgent_action')) expect(item.citations.length).toBeGreaterThan(0);
+    expect(r.carePlan.find((c) => c.id === 'ci_soon_gp')!.citations).toEqual([]);
     expect(r.questionsForClinician).toEqual(['Do I need a throat swab?']);
     expect(r.verification).toEqual({ passed: true, attempts: 1, issues: [] });
     expect(stages).toEqual(expect.arrayContaining(['checking_safety', 'researching', 'searching_knowledge', 'cross_checking', 'drafting', 'verifying', 'finalizing']));
@@ -167,7 +167,7 @@ describe('assessment graph orchestration', () => {
   it('retries a draft that cites evidence it never retrieved', async () => {
     const bad = { ...goodDraft, summary: `${goodDraft.summary} [E99]` };
     const { chat, deps } = setup({ chat: [new AIMessage('Evidence is in the case already.')], drafts: [bad, goodDraft], decisions: [ranking] });
-    const out = await runAssessment(deps, input(strepCase));
+    const out = await runAssessment(deps, input(throatCase));
 
     expect(out.outcome).toBe('COMPLETED');
     expect(out.result!.generator).toBe('llm');
@@ -183,7 +183,7 @@ describe('assessment graph orchestration', () => {
       memoryRefs: [],
     };
     const { deps } = setup({ chat: [new AIMessage('ok')], drafts: [unsafe, unsafe], decisions: [ranking] });
-    const out = await runAssessment(deps, input(strepCase));
+    const out = await runAssessment(deps, input(throatCase));
     const r = out.result!;
 
     expect(out.outcome).toBe('COMPLETED');
@@ -197,7 +197,7 @@ describe('assessment graph orchestration', () => {
 
   it('keeps working when the model provider is down', async () => {
     const { deps } = setup({ chat: [new Error('429 rate limited')], decisions: [new Error('decision timeout')] });
-    const out = await runAssessment(deps, input(strepCase));
+    const out = await runAssessment(deps, input(throatCase));
 
     expect(out.outcome).toBe('COMPLETED');
     expect(out.result!.generator).toBe('template_fallback');
@@ -212,7 +212,7 @@ describe('assessment graph orchestration', () => {
       decisions: [ranking],
       rounds: 2,
     });
-    const out = await runAssessment(deps, input(strepCase));
+    const out = await runAssessment(deps, input(throatCase));
     expect(chat.calls).toHaveLength(2);
     expect(chat.pendingReplies).toBe(4);
     expect(out.outcome).toBe('COMPLETED');
@@ -224,7 +224,7 @@ describe('assessment graph orchestration', () => {
       drafts: [goodDraft],
       decisions: [{ ...ranking, needs_emergency_care: { type: 'noul', noul: 0.92 } }],
     });
-    const out = await runAssessment(deps, input(strepCase));
+    const out = await runAssessment(deps, input(throatCase));
     expect(out.reviewReasons).toContain('decision_model_flagged_possible_emergency');
     expect(out.result!.urgency.level).toBe('soon');
     expect(out.result!.urgency.reasons.map((r) => r.ruleId)).toEqual(out.urgency!.triggered.map((t) => t.ruleId));
@@ -233,7 +233,7 @@ describe('assessment graph orchestration', () => {
 
   it('runs fully in template mode without any model', async () => {
     const { deps } = setup({ ai: false });
-    const out = await runAssessment(deps, input(strepCase));
+    const out = await runAssessment(deps, input(throatCase));
     const r = out.result!;
     expect(out.outcome).toBe('COMPLETED');
     expect(r.generator).toBe('template');
@@ -246,7 +246,7 @@ describe('assessment graph orchestration', () => {
 
   it('marks results incomplete when critical questions were skipped', async () => {
     const { deps } = setup({ ai: false });
-    const out = await runAssessment(deps, input({ ...strepCase, fever: { state: 'UNKNOWN', source: 'answer' }, temperature_c: { state: 'NOT_ASKED' } }, { asked: ALL_ASKED }));
+    const out = await runAssessment(deps, input({ ...throatCase, fever: { state: 'UNKNOWN', source: 'answer' }, temperature_c: { state: 'NOT_ASKED' } }, { asked: ALL_ASKED }));
     expect(out.outcome).toBe('INCOMPLETE');
     expect(out.result!.missingInformation.map((m) => m.key)).toContain('fever');
   });
@@ -275,7 +275,7 @@ describe('assessment graph orchestration', () => {
     });
 
     it('asks how this check relates to a recent one for the same problem, without assuming it came back', async () => {
-      const out = await runAssessment(setup({ ai: false }).deps, withMemory(strepCase, memory, {}));
+      const out = await runAssessment(setup({ ai: false }).deps, withMemory(throatCase, memory, {}));
       expect(out.outcome).toBe('NEEDS_INPUT');
       expect(out.nextQuestionId).toBe('q_episode');
       expect(out.facts.prior_similar_check).toMatchObject({ state: 'PRESENT', source: 'memory' });
@@ -295,22 +295,22 @@ describe('assessment graph orchestration', () => {
     });
 
     it('assesses a new episode on its own', async () => {
-      const independent = await runAssessment(setup({ ai: false }).deps, withMemory(strepCase));
-      const fresh = await runAssessment(setup({ ai: false }).deps, input(strepCase));
+      const independent = await runAssessment(setup({ ai: false }).deps, withMemory(throatCase));
+      const fresh = await runAssessment(setup({ ai: false }).deps, input(throatCase));
       expect(independent.result!.urgency.level).toBe(fresh.result!.urgency.level);
       expect(independent.result!.urgency.reasons.map((r) => r.ruleId)).toEqual(fresh.result!.urgency.reasons.map((r) => r.ruleId));
       expect(independent.result!.episode).toMatchObject({ answer: 'new', earlier: { checkId: 'c0', href: '/summary/c0' } });
     });
 
     it('counts symptoms that came back only when the patient says so', async () => {
-      const out = await runAssessment(setup({ ai: false }).deps, withMemory(strepCase, memory, { recurrent: P(), episode_new: A, episode_ongoing: A }));
+      const out = await runAssessment(setup({ ai: false }).deps, withMemory(throatCase, memory, { recurrent: P(), episode_new: A, episode_ongoing: A }));
       expect(out.urgency!.triggered.map((t) => t.ruleId)).toContain('r_recurrent');
       expect(out.result!.episode!.answer).toBe('returned');
       expect(out.result!.findings.present.map((f) => f.key)).not.toContain('recurrent');
     });
 
     it('treats an ongoing episode as lasting at least since the earlier check', async () => {
-      const out = await runAssessment(setup({ ai: false }).deps, withMemory(strepCase, memory, { episode_ongoing: P(), episode_new: A, recurrent: A }));
+      const out = await runAssessment(setup({ ai: false }).deps, withMemory(throatCase, memory, { episode_ongoing: P(), episode_new: A, recurrent: A }));
       expect(out.facts.duration_days).toMatchObject({ value: 10, source: 'episode' });
       expect(out.urgency!.triggered.map((t) => t.ruleId)).toEqual(expect.arrayContaining(['r_episode_ongoing', 'r_sore_throat_long']));
       expect(out.result!.episode!.answer).toBe('ongoing');
@@ -318,24 +318,24 @@ describe('assessment graph orchestration', () => {
 
     it('records "not sure" and assesses the check on its own', async () => {
       const unsure = { state: 'UNKNOWN' as const, source: 'answer' };
-      const out = await runAssessment(setup({ ai: false }).deps, withMemory(strepCase, memory, { episode_ongoing: unsure, episode_new: unsure, recurrent: unsure }));
+      const out = await runAssessment(setup({ ai: false }).deps, withMemory(throatCase, memory, { episode_ongoing: unsure, episode_new: unsure, recurrent: unsure }));
       expect(out.outcome).toBe('COMPLETED');
       expect(out.result!.episode!.answer).toBe('unsure');
-      expect(out.facts.duration_days).toMatchObject({ value: 3 });
+      expect(out.facts.duration_days).toMatchObject({ value: 8 });
     });
 
     it('ignores past checks outside the recurrence window, for other concerns, or that this check follows up', async () => {
       const old = [{ ...memory[2]!, recordedAt: '2026-08-01T09:00:00Z' }];
       const other = [{ ...memory[2]!, concernCode: 'headache' }];
-      for (const m of [old, other]) expect((await runAssessment(setup({ ai: false }).deps, withMemory(strepCase, m, {}))).facts.prior_similar_check).toBeUndefined();
-      const followUp = withMemory(strepCase, memory, {});
+      for (const m of [old, other]) expect((await runAssessment(setup({ ai: false }).deps, withMemory(throatCase, m, {}))).facts.prior_similar_check).toBeUndefined();
+      const followUp = withMemory(throatCase, memory, {});
       const out = await runAssessment(setup({ ai: false }).deps, { ...followUp, context: { ...followUp.context, parentCheckId: 'c0' } });
       expect(out.facts.prior_similar_check).toBeUndefined();
       expect(out.outcome).toBe('COMPLETED');
     });
 
     it('adds questions from confirmed allergies and medicines, citing their memory IDs', async () => {
-      const r = (await runAssessment(setup({ ai: false }).deps, withMemory(strepCase))).result!;
+      const r = (await runAssessment(setup({ ai: false }).deps, withMemory(throatCase))).result!;
       expect(r.questionsForClinician.join(' ')).toMatch(/Penicillin allergy/);
       expect(r.questionsForClinician.join(' ')).toMatch(/Levothyroxine/);
       expect(r.memory!.filter((m) => m.used).map((m) => m.id)).toEqual(['M1', 'M2']);
@@ -344,7 +344,7 @@ describe('assessment graph orchestration', () => {
     it('rejects an AI draft that invents history, then falls back to approved content', async () => {
       const invented = { ...goodDraft, summary: 'You take metformin for diabetes, and your sore throat keeps coming back. A clinician should check this within 24–48 hours.' };
       const { deps } = setup({ chat: [new AIMessage('ok')], drafts: [invented, invented], decisions: [ranking] });
-      const out = await runAssessment({ ...deps, watchTerms: ['metformin', 'diabetes', 'penicillin'] }, withMemory(strepCase));
+      const out = await runAssessment({ ...deps, watchTerms: ['metformin', 'diabetes', 'penicillin'] }, withMemory(throatCase));
       expect(out.result!.generator).toBe('template_fallback');
       expect(out.result!.verification.issues.join(' ')).toMatch(/without citing a memory item|"metformin"/);
       expect(out.result!.summary).not.toMatch(/metformin|diabetes/);
@@ -354,7 +354,7 @@ describe('assessment graph orchestration', () => {
 
     it('keeps an unrelated earlier check out of the AI’s view and the result', async () => {
       const { chat, deps } = setup({ chat: [new AIMessage('ok')], drafts: [goodDraft], decisions: [ranking] });
-      const out = await runAssessment(deps, withMemory(strepCase, [...memory, unrelated]));
+      const out = await runAssessment(deps, withMemory(throatCase, [...memory, unrelated]));
       const sent = JSON.stringify([chat.calls, chat.structuredCalls]);
       expect(sent).toContain('thisConsultation');
       expect(sent).not.toMatch(/stiff neck/i);
@@ -363,9 +363,9 @@ describe('assessment graph orchestration', () => {
     });
 
     it('rejects a draft that presents a symptom from an earlier check as current', async () => {
-      const contaminated = { ...goodDraft, summary: 'You have a sore throat with fever, swollen glands and a stiff neck. A clinician should check this within the next 24–48 hours.' };
+      const contaminated = { ...goodDraft, summary: 'You have a sore throat with swollen glands and a stiff neck. A clinician should check this within the next 24–48 hours.' };
       const { chat, deps } = setup({ chat: [new AIMessage('ok')], drafts: [contaminated, goodDraft], decisions: [ranking] });
-      const out = await runAssessment(deps, withMemory(strepCase, [...memory, unrelated]));
+      const out = await runAssessment(deps, withMemory(throatCase, [...memory, unrelated]));
       expect(JSON.stringify(chat.structuredCalls[1]!.input)).toContain('haven\'t told Nora about in this check');
       expect(out.result!.summary).not.toMatch(/stiff neck/i);
     });
@@ -379,7 +379,7 @@ describe('assessment graph orchestration', () => {
   });
 
   it('finishes with the warning sign recorded as unresolved when the patient is not sure', async () => {
-    const out = await runAssessment(setup({ ai: false }).deps, input({ ...strepCase, drooling: { state: 'UNKNOWN', source: 'answer' } }, { asked: ALL_ASKED }));
+    const out = await runAssessment(setup({ ai: false }).deps, input({ ...throatCase, drooling: { state: 'UNKNOWN', source: 'answer' } }, { asked: ALL_ASKED }));
     expect(out.outcome).toBe('INCOMPLETE');
     expect(out.result!.urgency.reasons.map((r) => r.ruleId)).toContain('unresolved_safety');
     expect(out.result!.missingInformation.map((m) => m.key)).toContain('drooling');
@@ -432,8 +432,10 @@ describe('assessment graph orchestration', () => {
         ...goodDraft,
         summary: 'You have a sore throat with no fever, which usually settles on its own. Your temperature was 37.2 °C.',
       };
-      const { chat, deps } = setup({ chat: [new AIMessage('ok')], drafts: [contradicting, goodDraft], decisions: [ranking] });
-      const out = await runAssessment(deps, input(strepCase));
+      const sameDay = { ...goodDraft, summary: 'You described a sore throat with fever and swollen neck glands. A doctor should see you today.' };
+      const { chat, deps } = setup({ chat: [new AIMessage('ok')], drafts: [contradicting, sameDay], decisions: [ranking] });
+      const out = await runAssessment(deps, input({ ...throatCase, fever: P(), temperature_c: P(38.4) }));
+      expect(out.result!.urgency.level).toBe('urgent');
       expect(out.result!.generator).toBe('llm');
       const feedback = JSON.stringify(chat.structuredCalls[1]!.input);
       expect(feedback).toContain('you said you do');
@@ -442,7 +444,7 @@ describe('assessment graph orchestration', () => {
     });
 
     it('offers home care only as comfort until the patient is seen, and qualifies reassuring information', async () => {
-      const r = (await runAssessment(setup({ ai: false }).deps, input(strepCase))).result!;
+      const r = (await runAssessment(setup({ ai: false }).deps, input(throatCase))).result!;
       expect(r.urgency.level).toBe('soon');
       const selfCare = r.carePlan.filter((i) => i.kind === 'self_care');
       expect(selfCare.length).toBeGreaterThan(0);
@@ -452,13 +454,14 @@ describe('assessment graph orchestration', () => {
     });
 
     it('drops home care once the patient needs a doctor today', async () => {
-      const r = (await runAssessment(setup({ ai: false }).deps, input({ ...strepCase, temperature_c: P(39.8) }))).result!;
+      const r = (await runAssessment(setup({ ai: false }).deps, input({ ...throatCase, fever: P(), temperature_c: P(38.4) }))).result!;
       expect(r.urgency.level).toBe('urgent');
+      expect(r.urgency.reasons.map((x) => x.ruleId)).toContain('r_sore_throat_fever');
       expect(r.carePlan.some((i) => i.kind === 'self_care')).toBe(false);
     });
 
     it('asks again when a later message contradicts an answer, rather than silently keeping either', async () => {
-      const out = await runAssessment(setup({ ai: false }).deps, input({ ...strepCase, cough: A }, { message: 'I have a cough as well', asked: ALL_ASKED }));
+      const out = await runAssessment(setup({ ai: false }).deps, input({ ...throatCase, cough: A }, { message: 'I have a cough as well', asked: ALL_ASKED }));
       expect(out.facts.cough).toMatchObject({ state: 'NOT_ASKED', source: 'unclear' });
       expect(out.conflicts).toEqual([{ key: 'cough', label: 'Cough', answered: 'no', mentioned: 'yes', resolution: 'ask_again' }]);
       expect(out.outcome).toBe('NEEDS_INPUT');
@@ -479,7 +482,7 @@ describe('assessment graph orchestration', () => {
         decisions: [ranking],
         extraction: [{ observations: [{ factKey: 'fever', state: 'PRESENT', value: null, quote: 'Could be a fever too', assertion: 'affirmed' }] }],
       });
-      const out = await runAssessment(deps, input({ ...strepCase, fever: A }, { message: 'Could be a fever too, not sure.', asked: ALL_ASKED }));
+      const out = await runAssessment(deps, input({ ...throatCase, fever: A }, { message: 'Could be a fever too, not sure.', asked: ALL_ASKED }));
       expect(out.conflicts).toEqual([]);
       expect(out.hedged).toEqual(['fever']);
       expect(out.facts.fever).toMatchObject({ state: 'NOT_ASKED', source: 'unclear' });

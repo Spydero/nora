@@ -119,7 +119,7 @@ const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e)).s
 const conflictsOf = (s: AssessmentState) => [...(s.context.conflicts ?? []), ...s.conflicts];
 
 /** The records this consultation may use; unrelated earlier checks never reach the AI or the result. */
-const recordsOf = (s: AssessmentState) => relevantMemory(s.context.memory, s.concerns, s.context.parentCheckId);
+const recordsOf = (s: AssessmentState) => relevantMemory(s.context.memory, s.context.parentCheckId, priorCheck(s, s.concerns));
 
 /** Real verification failures, as opposed to the model not producing a draft at all. */
 const verificationFailed = (s: AssessmentState) => s.issues.some((i) => !i.startsWith('Draft could not be produced'));
@@ -127,14 +127,12 @@ const verificationFailed = (s: AssessmentState) => s.issues.some((i) => !i.start
 /** Source of a duration Nora lengthened because the patient said the problem never went away after their earlier check. */
 export const EPISODE_SOURCE = 'episode';
 
-/** A recent finished check for the same problem; the check this one deliberately follows up doesn't count. */
+/**
+ * A recent finished check for the same problem. A follow-up already names
+ * its earlier check, so Nora doesn't ask about a second one.
+ */
 const priorCheck = (s: AssessmentState, concerns: string[]) =>
-  recurrence(
-    s.bundle,
-    concerns,
-    s.context.memory.filter((m) => !m.checkId || m.checkId !== s.context.parentCheckId),
-    s.context.now ?? new Date(),
-  );
+  s.context.parentCheckId ? null : recurrence(s.bundle, concerns, s.context.memory, s.context.now ?? new Date());
 
 const draftSchema = z.object({
   summary: z

@@ -3,6 +3,7 @@ import type { AuthPrincipal } from '../auth/auth.types.js';
 import { AppException } from '../common/app.exception.js';
 import type { ConsentPurpose } from '../generated/prisma/enums.js';
 import { PrismaService } from '../prisma/prisma.service.js';
+import { stopQueuedAssessments } from './processing-stop.js';
 
 export interface ConsentState {
   purpose: ConsentPurpose;
@@ -44,15 +45,18 @@ export class ConsentService {
   async record(principal: AuthPrincipal, purpose: ConsentPurpose, granted: boolean): Promise<ConsentState[]> {
     const notice = (await this.currentNotices(principal.tenantId)).find((n) => n.purpose === purpose);
     if (!notice) throw new AppException(HttpStatus.NOT_FOUND, 'NOTICE_NOT_FOUND', 'There is no notice for this purpose.');
-    await this.prisma.consentRecord.create({
-      data: {
-        tenantId: principal.tenantId,
-        subjectUserId: principal.userId,
-        actorUserId: principal.userId,
-        purpose,
-        action: granted ? 'GRANTED' : 'WITHDRAWN',
-        noticeVersionId: notice.id,
-      },
+    await this.prisma.$transaction(async (tx) => {
+      await tx.consentRecord.create({
+        data: {
+          tenantId: principal.tenantId,
+          subjectUserId: principal.userId,
+          actorUserId: principal.userId,
+          purpose,
+          action: granted ? 'GRANTED' : 'WITHDRAWN',
+          noticeVersionId: notice.id,
+        },
+      });
+      if (purpose === 'PROCESSING' && !granted) await stopQueuedAssessments(tx, { tenantId: principal.tenantId, userId: principal.userId }, 'consent_withdrawn');
     });
     return this.list(principal);
   }

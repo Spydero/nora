@@ -4,7 +4,7 @@ import { buildDoctorSummary, type DoctorSummaryInput } from './doctor-summary.js
 const result = {
   schemaVersion: '1',
   status: 'COMPLETED',
-  urgency: { level: 'soon', title: 'See a doctor within 24–48 hours', text: '', reasons: [{ ruleId: 'r_strep_features', message: 'A sore throat with fever, swollen neck glands and no cough should be checked by a doctor.', citations: ['E1'] }] },
+  urgency: { level: 'soon', title: 'See a doctor within 24–48 hours', text: '', reasons: [{ ruleId: 'r_sore_throat_long', message: 'A sore throat that does not improve after a week should be checked by a doctor.', citations: ['E1'] }] },
   summary: 'You have a sore throat with fever.',
   concerns: [{ code: 'sore_throat', label: 'Sore throat' }],
   findings: {

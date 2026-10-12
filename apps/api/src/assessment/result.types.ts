@@ -21,6 +21,10 @@ export interface FindingItem {
   source: string;
   /** The patient's own words, when Nora read this from their message. */
   said?: string;
+  /** For an exposure: how many days ago that particular exposure happened, when known. */
+  daysAgo?: number;
+  /** The patient's own words for when the exposure happened. */
+  whenSaid?: string;
 }
 
 export interface AnswerConflict {

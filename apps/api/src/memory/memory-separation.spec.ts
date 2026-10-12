@@ -1,6 +1,6 @@
 import { guardConfirmed } from '../assessment/extraction/llm-extractor.js';
 import { extractWithRules } from '../assessment/extraction/rule-extractor.js';
-import { caseSummary, escalationResult, findings, relevantMemory } from '../assessment/graph/compose.js';
+import { caseSummary, escalationResult, findings, recurrence, relevantMemory } from '../assessment/graph/compose.js';
 import { aboveLevelIssues, answerFacts, answerIssues, recommendationConflicts } from '../assessment/graph/consistency.js';
 import { EvidenceRegistry } from '../assessment/graph/evidence-registry.js';
 import { conflictNotice } from '../checks/assessment.worker.js';
@@ -73,15 +73,34 @@ describe('earlier consultations stay separate', () => {
     { id: 'M3', kind: 'past_check', label: 'Earlier check', text: '5 Oct — Sore throat.', recordedAt: '2026-10-05T09:00:00Z', href: '/history', checkId: 'old-throat', concernCode: 'sore_throat' },
   ];
 
-  it('only passes earlier checks for the same problem, or the one being followed up', () => {
-    expect(relevantMemory(memory, ['sore_throat']).map((m) => m.id)).toEqual(['M1', 'M3']);
-    expect(relevantMemory(memory, ['cough']).map((m) => m.id)).toEqual(['M1']);
-    expect(relevantMemory(memory, ['cough'], 'old-headache').map((m) => m.id)).toEqual(['M1', 'M2']);
+  const now = new Date('2026-10-13T09:00:00Z');
+  const records = (items: MemoryItem[], concerns: string[], parent: string | null = null) =>
+    relevantMemory(items, parent, parent ? null : recurrence(demoBundle, concerns, items, now)).map((m) => m.id);
+
+  it('only passes the earlier check for the same problem, or the one being followed up', () => {
+    expect(records(memory, ['sore_throat'])).toEqual(['M1', 'M3']);
+    expect(records(memory, ['cough'])).toEqual(['M1']);
+    expect(records(memory, ['cough'], 'old-headache')).toEqual(['M1', 'M2']);
+  });
+
+  it('lists one earlier check, never the same one twice, and not a second one alongside a follow-up', () => {
+    const repeated: MemoryItem[] = [
+      { id: 'A', kind: 'past_check', label: 'Earlier check', text: '10 Oct — Sore throat again.', recordedAt: '2026-10-10T09:00:00Z', href: '/history', checkId: 'throat-2', concernCode: 'sore_throat' },
+      { id: 'B', kind: 'past_check', label: 'Earlier check', text: '10 Oct — Sore throat again.', recordedAt: '2026-10-10T09:00:00Z', href: '/history', checkId: 'throat-2', concernCode: 'sore_throat' },
+      ...memory,
+    ];
+    expect(records(repeated, ['sore_throat'])).toEqual(['A', 'M1']);
+    expect(records(repeated, ['sore_throat'], 'old-throat')).toEqual(['M1', 'M3']);
+  });
+
+  it('ignores a same-problem check from outside the recurrence window', () => {
+    const old: MemoryItem[] = [{ ...memory[2]!, recordedAt: new Date(now.getTime() - (demoBundle.meta.recurrenceDays + 1) * 86_400_000).toISOString() }];
+    expect(records(old, ['sore_throat'])).toEqual([]);
   });
 
   it('gives the AI this consultation’s symptoms separately from background and records', () => {
     const facts: FactMap = { sore_throat: P, fever: A, diabetes: { state: 'PRESENT', source: 'profile' }, recurrent: { state: 'PRESENT', source: 'memory' } };
-    const s = caseSummary(demoBundle, facts, ['sore_throat'], null, relevantMemory(memory, ['sore_throat']));
+    const s = caseSummary(demoBundle, facts, ['sore_throat'], null, relevantMemory(memory, null, recurrence(demoBundle, ['sore_throat'], memory, now)));
     expect(s.thisConsultation).toEqual({ present: ['Sore throat'], absent: ['Fever'], unknown: [] });
     expect(s.healthBackground.present).toEqual(['Diabetes']);
     expect(JSON.stringify(s)).not.toMatch(/stiff neck/i);

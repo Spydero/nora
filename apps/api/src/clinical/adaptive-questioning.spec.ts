@@ -116,7 +116,18 @@ describe('adaptive questioning', () => {
   it('asks risk-factor questions only when the answer could change the advice', () => {
     const base: FactMap = { ...adult, ear_pain: P };
     expect(simulate({ ...base, fever: A }, sayNo).asked).not.toContain('q_immuno');
-    expect(simulate({ ...base, fever: P }, sayNo).asked).toContain('q_immuno');
+    const withFever = simulate({ ...base, fever: P }, sayNo);
+    expect(evaluateUrgency(demoBundle, withFever.facts, withFever.concerns).level).toBe('urgent');
+    expect(withFever.asked).not.toContain('q_immuno');
+  });
+
+  it('asks a risk factor that would make a reported symptom urgent, even when the concern doesn’t list it', () => {
+    const headache = demoBundle.concerns.find((c) => c.code === 'headache')!;
+    expect(headache.questions).not.toContain('q_immuno');
+    expect(simulate({ headache: P, fever: P }, sayNo).asked).toContain('q_immuno');
+    expect(simulate({ headache: P, fever: A }, sayNo).asked).not.toContain('q_immuno');
+    const immuno = simulate({ headache: P, fever: P }, (q, id) => (id === 'q_immuno' ? 'yes' : sayNo(q, id)));
+    expect(evaluateUrgency(demoBundle, immuno.facts, immuno.concerns).level).toBe('urgent');
   });
 
   it('does not ask history questions the profile already answered', () => {

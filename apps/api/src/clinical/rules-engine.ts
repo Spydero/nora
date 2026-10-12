@@ -28,6 +28,8 @@ export interface TriggeredRule {
   sourceKey: string;
   /** The passage of the source that supports the message, when the content names it. */
   sourceHeading?: string;
+  /** Set when the rule awaits a clinician's decision on its threshold or level. */
+  review?: string;
   careItems: string[];
 }
 
@@ -83,6 +85,23 @@ export function detectConcerns(bundle: BundleContent, facts: FactMap): ConcernDe
   const exposures = matched.filter((c) => c.kind === 'exposure');
   const specific = symptoms.filter((c) => !c.onlyAlone);
   return [...(specific.length ? specific : symptoms.slice(0, 1)), ...exposures];
+}
+
+/** Each exposure's own timing fact, so two exposures never share one timeline. */
+export function exposureTiming(bundle: BundleContent): Map<string, string> {
+  return new Map(Object.entries(bundle.facts).flatMap(([k, f]) => (f.timing ? [[k, f.timing] as const] : [])));
+}
+
+/**
+ * Timings Nora needs: those of reported exposures the bundle treats as
+ * clinically significant, either a warning sign or what an exposure concern
+ * is about. Other exposures keep their timing when the patient gives it.
+ */
+export function requiredTimings(bundle: BundleContent, facts: FactMap): string[] {
+  const exposureTriggers = new Set(bundle.concerns.filter((c) => c.kind === 'exposure').flatMap((c) => c.triggers));
+  return [...exposureTiming(bundle)]
+    .filter(([k]) => facts[k]?.state === 'PRESENT' && (bundle.facts[k]!.critical || exposureTriggers.has(k)))
+    .map(([, timing]) => timing);
 }
 
 /** Not yet asked or told; an "I'm not sure" or a skip is an answer, not an open fact. */
@@ -194,6 +213,7 @@ export function evaluateUrgency(bundle: BundleContent, facts: FactMap, concerns:
     message: r.message,
     sourceKey: r.sourceKey,
     ...(r.sourceHeading ? { sourceHeading: r.sourceHeading } : {}),
+    ...(r.review ? { review: r.review } : {}),
     careItems: r.careItems,
   }));
   const covered = new Set(fired.flatMap((r) => conditionFacts(r.when)));
@@ -215,7 +235,15 @@ export function evaluateUrgency(bundle: BundleContent, facts: FactMap, concerns:
     ]
       .filter(Boolean)
       .join(' ');
-    triggered.push({ ruleId: `warn:${id}`, level, message, sourceKey: item.sourceKey, ...(item.sourceHeading ? { sourceHeading: item.sourceHeading } : {}), careItems: [] });
+    triggered.push({
+      ruleId: `warn:${id}`,
+      level,
+      message,
+      sourceKey: item.sourceKey,
+      ...(item.sourceHeading ? { sourceHeading: item.sourceHeading } : {}),
+      ...(item.review ? { review: item.review } : {}),
+      careItems: [],
+    });
   }
 
   for (const [key, def] of Object.entries(bundle.facts)) {
@@ -225,6 +253,7 @@ export function evaluateUrgency(bundle: BundleContent, facts: FactMap, concerns:
       level: WARNING_SIGN_FLOOR,
       message: `${def.label} is a warning sign, so a doctor should check it.`,
       sourceKey: 'src_red_flags',
+      review: 'Nora’s floor for a warning sign that no rule covers; no source sets this level.',
       careItems: [],
     });
   }
@@ -238,6 +267,7 @@ export function evaluateUrgency(bundle: BundleContent, facts: FactMap, concerns:
       message: `Nora couldn’t rule out ${labels.length > 1 ? `${labels.slice(0, -1).join('; ')} or ${labels.at(-1)}` : labels[0]}. These can be warning signs, so a doctor should check.`,
       sourceKey: 'src_red_flags',
       sourceHeading: 'When you are not sure',
+      review: 'The NHS asks for urgent advice when you are not sure whether you need emergency care; Nora’s floor for a warning sign it could not rule out is 24–48 hours.',
       careItems: [],
     });
   }
@@ -349,7 +379,7 @@ function factWeights(bundle: BundleContent, facts: FactMap, concerns: ConcernDef
   };
   for (const r of applicableRules(bundle, concerns)) consider(r.when, r.level);
   for (const id of new Set(concerns.flatMap((c) => c.careItems))) bundle.careItems[id]?.escalate.forEach((e) => consider(e.when, e.level));
-  concerns.flatMap((c) => c.requiredFacts).forEach((k) => bump(k, REQUIRED_WEIGHT));
+  [...concerns.flatMap((c) => c.requiredFacts), ...requiredTimings(bundle, facts)].forEach((k) => bump(k, REQUIRED_WEIGHT));
   for (const key of unclearFacts(facts)) bump(key, bundle.facts[key]?.critical ? CLARIFY_CRITICAL_WEIGHT : CLARIFY_WEIGHT);
   return weights;
 }
@@ -391,7 +421,15 @@ function reasonFor(q: QuestionDef, weight: number, unclear: boolean): QuestionRe
 export function planQuestions(bundle: BundleContent, facts: FactMap, concerns: ConcernDef[], asked: ReadonlySet<string>): PlannedQuestion[] {
   const screening = new Set(bundle.screeningQuestions);
   const unclear = unclearFacts(facts);
-  const base = [...bundle.screeningQuestions, ...(bundle.episodeQuestion ? [bundle.episodeQuestion] : []), ...concerns.flatMap((c) => c.questions)];
+  const timings = requiredTimings(bundle, facts);
+  const timingQuestions = Object.entries(bundle.questions).flatMap(([id, q]) => (q.factKey && timings.includes(q.factKey) ? [id] : []));
+  const base = [
+    ...bundle.screeningQuestions,
+    ...(bundle.episodeQuestion ? [bundle.episodeQuestion] : []),
+    ...concerns.flatMap((c) => c.questions),
+    ...timingQuestions,
+    ...completingQuestions(bundle, facts, concerns),
+  ];
   const covered = new Set(base.flatMap((id) => (bundle.questions[id] ? questionFactKeys(bundle.questions[id]) : [])));
   const clarifying = unclear
     .filter((k) => !covered.has(k))
@@ -430,13 +468,32 @@ export function planQuestions(bundle: BundleContent, facts: FactMap, concerns: C
   return planned;
 }
 
+/**
+ * Risk-factor questions that could complete a rule something the patient
+ * reported has already partly met, such as a weakened immune system making a
+ * reported fever urgent, even when no detected concern lists that question.
+ * Only history facts are added, so Nora never goes looking for unrelated
+ * symptoms; whether each is worth asking is still decided by how far its
+ * answer could change urgency.
+ */
+function completingQuestions(bundle: BundleContent, facts: FactMap, concerns: ConcernDef[]): string[] {
+  const reported = (k: string) => facts[k]?.state === 'PRESENT' && facts[k]?.source !== 'profile' && bundle.facts[k]?.type === 'boolean';
+  const open = new Set<string>();
+  for (const r of applicableRules(bundle, concerns)) {
+    const keys = conditionFacts(r.when);
+    if (!keys.some(reported) || evaluatePartial(r.when, facts) !== undefined) continue;
+    keys.filter((k) => isOpen(facts[k]) && bundle.facts[k]?.kind === 'history').forEach((k) => open.add(k));
+  }
+  return Object.entries(bundle.questions).flatMap(([id, q]) => (q.purpose !== 'safety' && q.type !== 'text' && questionFactKeys(q).some((k) => open.has(k)) ? [id] : []));
+}
+
 /** The most important question still worth asking, or null when the assessment is complete. */
 export function nextQuestion(bundle: BundleContent, facts: FactMap, concerns: ConcernDef[], asked: ReadonlySet<string>): PlannedQuestion | null {
   return planQuestions(bundle, facts, concerns, asked)[0] ?? null;
 }
 
 export function missingRequiredFacts(bundle: BundleContent, facts: FactMap, concerns: ConcernDef[]): string[] {
-  const keys = new Set(concerns.flatMap((c) => c.requiredFacts));
+  const keys = new Set([...concerns.flatMap((c) => c.requiredFacts), ...requiredTimings(bundle, facts)]);
   return [...keys].filter((k) => !isKnown(facts[k]) && bundle.facts[k]);
 }
 

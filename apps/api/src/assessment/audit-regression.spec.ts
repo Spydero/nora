@@ -3,14 +3,17 @@ import { ScriptedDecisions } from '../ai/decisions.js';
 import { ScriptedChatModel } from '../ai/scripted-chat-model.js';
 import { demoBundle } from '../clinical/content/demo-bundle.js';
 import { demoKnowledge } from '../clinical/content/knowledge.js';
-import { detectConcerns, evaluateUrgency, type FactMap, planQuestions, runSentinels } from '../clinical/rules-engine.js';
+import { detectConcerns, evaluateUrgency, type FactMap, missingRequiredFacts, planQuestions, runSentinels } from '../clinical/rules-engine.js';
 import { InMemoryKnowledge } from '../knowledge/in-memory-knowledge.js';
 import type { MemoryItem } from '../memory/memory.types.js';
 import { applyObservations, guardConfirmed, validateObservations } from './extraction/llm-extractor.js';
 import { extractWithRules } from './extraction/rule-extractor.js';
 import { type AssessmentDeps, type AssessmentInput, runAssessment } from './graph/assessment-graph.js';
-import { findings, relevantMemory } from './graph/compose.js';
-import { bestPassage, claimOverlap, MIN_SUPPORT, supports } from './graph/evidence-registry.js';
+import { findings, recurrence, relevantMemory } from './graph/compose.js';
+import { bestPassage, claimOverlap, supports } from './graph/evidence-registry.js';
+import { CONDITION } from './graph/verify.js';
+import { buildDoctorSummary } from '../checks/doctor-summary.js';
+import { type UrgencyLevel, urgencyRank } from '../clinical/bundle.schema.js';
 
 const contacts = { number: '112', crisisLine: null };
 const adult: FactMap = { age: { state: 'PRESENT', value: 30, source: 'profile' } };
@@ -47,7 +50,7 @@ describe('symptom, exposure and timeline preservation', () => {
     const facts = read('A stray dog bit my hand 5 days ago and I have had a fever since yesterday');
     expect(facts.animal_bite?.state).toBe('PRESENT');
     expect(facts.fever?.state).toBe('PRESENT');
-    expect(value(facts, 'exposure_days')).toBe(5);
+    expect(value(facts, 'animal_bite_days')).toBe(5);
     expect(value(facts, 'duration_days')).toBe(1);
   });
 
@@ -59,7 +62,7 @@ describe('symptom, exposure and timeline preservation', () => {
 
   it('records a bite on its own without inventing a symptom duration', () => {
     const facts = read('I was bitten by a dog 2 weeks ago');
-    expect(value(facts, 'exposure_days')).toBe(14);
+    expect(value(facts, 'animal_bite_days')).toBe(14);
     expect(facts.duration_days).toBeUndefined();
   });
 
@@ -67,9 +70,76 @@ describe('symptom, exposure and timeline preservation', () => {
     const message = 'A dog bit me 5 days ago and I have a fever since yesterday';
     const kept = validateObservations(demoBundle, message, [
       { factKey: 'duration_days', state: 'PRESENT', value: 5, quote: 'bit me 5 days ago', assertion: 'affirmed' },
-      { factKey: 'exposure_days', state: 'PRESENT', value: 5, quote: 'bit me 5 days ago', assertion: 'affirmed' },
+      { factKey: 'animal_bite_days', state: 'PRESENT', value: 5, quote: 'bit me 5 days ago', assertion: 'affirmed' },
     ]);
-    expect(kept.map((o) => o.factKey)).toEqual(['exposure_days']);
+    expect(kept.map((o) => o.factKey)).toEqual(['animal_bite_days']);
+  });
+
+  it('drops a model reading that gives one exposure’s date to another', () => {
+    const message = 'A dog bit me 5 days ago. I ate street food yesterday';
+    const kept = validateObservations(demoBundle, message, [
+      { factKey: 'animal_bite_days', state: 'PRESENT', value: 1, quote: 'I ate street food yesterday', assertion: 'affirmed' },
+      { factKey: 'animal_bite_days', state: 'PRESENT', value: 5, quote: 'A dog bit me 5 days ago', assertion: 'affirmed' },
+    ]);
+    expect(kept.map((o) => o.value)).toEqual([5]);
+  });
+
+  it('keeps each exposure’s own time when a message names two', () => {
+    const facts = read('A dog bit me 5 days ago. I also ate street food 2 days ago and now I have diarrhoea since yesterday');
+    expect(facts.animal_bite?.state).toBe('PRESENT');
+    expect(facts.suspect_food?.state).toBe('PRESENT');
+    expect(value(facts, 'animal_bite_days')).toBe(5);
+    expect(value(facts, 'suspect_food_days')).toBe(2);
+    expect(value(facts, 'duration_days')).toBe(1);
+    const f = findings(demoBundle, facts);
+    expect(f.exposures!.map((i) => [i.key, i.daysAgo])).toEqual(expect.arrayContaining([['animal_bite', 5], ['suspect_food', 2]]));
+  });
+
+  it('carries each exposure’s own time through triage, the result and the doctor summary', async () => {
+    const message = 'A dog bit me 5 days ago. I also ate street food 2 days ago and I have had diarrhoea since yesterday';
+    const out = await runAssessment(deps('off'), input({ bite_bleeding: A, snake_bite: A, breathless_severe: A, lip_throat_swelling: A }, message));
+    const r = out.result!;
+    expect(out.facts.animal_bite_days).toMatchObject({ value: 5 });
+    expect(out.facts.suspect_food_days).toMatchObject({ value: 2 });
+    expect(out.facts.duration_days).toMatchObject({ value: 1 });
+    expect(r.urgency.reasons.map((x) => x.ruleId)).toContain('r_animal_bite');
+    expect(r.findings.exposures!.map((i) => [i.key, i.daysAgo])).toEqual(expect.arrayContaining([['animal_bite', 5], ['suspect_food', 2]]));
+    for (const key of ['animal_bite_days', 'suspect_food_days']) expect(r.findings.present.map((i) => i.key)).not.toContain(key);
+    expect(r.summary).toMatch(/bitten or scratched by an animal \(about 5 days ago\)/i);
+    expect(r.summary).toMatch(/unsafe \(about 2 days ago\)/i);
+    const summary = buildDoctorSummary({
+      checkId: 'c1',
+      createdAt: new Date(),
+      assessedAt: new Date(),
+      patient: { name: null, age: 30, sexAtBirth: null },
+      profile: null,
+      ownWords: [message],
+      answers: [],
+      additional: [],
+      result: r,
+      review: null,
+      urgencyTitles: {},
+      now: new Date(),
+    });
+    const exposures = summary.sections.find((s) => s.id === 'exposures')!.text;
+    expect(exposures).toMatch(/Bitten or scratched by an animal — 5 days ago/);
+    expect(exposures).toMatch(/may have been unsafe — 2 days ago/);
+  });
+
+  it('keeps a time it can’t tie to one exposure as a general exposure time, not as either exposure’s or the symptoms’', () => {
+    const facts = read('A dog bit me and I ate street food. It happened 3 days ago');
+    expect(value(facts, 'animal_bite_days')).toBeUndefined();
+    expect(value(facts, 'suspect_food_days')).toBeUndefined();
+    expect(value(facts, 'exposure_days')).toBe(3);
+    expect(facts.duration_days).toBeUndefined();
+  });
+
+  it('reads "it was … ago" as the time of whatever the sentence before described', () => {
+    const bite = read('A dog bit my hand. It was 5 days ago');
+    expect(value(bite, 'animal_bite_days')).toBe(5);
+    expect(bite.duration_days).toBeUndefined();
+    const fever = read('I have a fever. It started 2 days ago');
+    expect(value(fever, 'duration_days')).toBe(2);
   });
 
   it('keeps symptoms, denials, severity and the patient’s own words, and invents nothing', () => {
@@ -83,7 +153,7 @@ describe('symptom, exposure and timeline preservation', () => {
 
   it('lists exposures separately from symptoms', () => {
     const f = findings(demoBundle, read('A dog bit me 3 days ago and now I have a fever'));
-    expect(f.exposures!.map((i) => i.key)).toEqual(expect.arrayContaining(['animal_bite', 'exposure_days']));
+    expect(f.exposures!.map((i) => [i.key, i.daysAgo])).toEqual([['animal_bite', 3]]);
     expect(f.present.map((i) => i.key)).not.toContain('animal_bite');
     expect(f.present.map((i) => i.key)).toContain('fever');
   });
@@ -95,8 +165,22 @@ describe('adaptive questioning', () => {
   it('screens a bite’s warning signs first and asks when it happened only if the patient did not say', () => {
     const told = read('A dog bit me 3 days ago');
     expect(plan(told)[0]).toBe('q_ws_bite');
-    expect(plan(told)).not.toContain('q_exposure_days');
-    expect(plan(read('A dog bit my leg'))).toContain('q_exposure_days');
+    expect(plan(told)).not.toContain('q_animal_bite_days');
+    expect(plan(read('A dog bit my leg'))).toContain('q_animal_bite_days');
+  });
+
+  it('asks when each significant exposure happened, and nothing about exposures the patient didn’t report', () => {
+    const facts: FactMap = { ...adult, animal_bite: P(), suspect_food: P(), diarrhoea: P() };
+    const ids = plan(facts);
+    expect(ids).toContain('q_animal_bite_days');
+    expect(ids).not.toContain('q_snake_bite_days');
+    expect(plan({ ...adult, diarrhoea: P(), suspect_food: P() })).not.toContain('q_animal_bite_days');
+  });
+
+  it('counts an unknown time for a significant exposure as missing information', () => {
+    const facts: FactMap = { ...adult, animal_bite: P(), bite_bleeding: A, snake_bite: A, breathless_severe: A, lip_throat_swelling: A };
+    expect(missingRequiredFacts(demoBundle, facts, detectConcerns(demoBundle, facts))).toContain('animal_bite_days');
+    expect(missingRequiredFacts(demoBundle, { ...facts, animal_bite_days: P(2) }, detectConcerns(demoBundle, facts))).not.toContain('animal_bite_days');
   });
 
   it('follows both the bite and a new fever, without asking anything twice', () => {
@@ -153,9 +237,66 @@ describe('high-risk exposures reach the right pathway', () => {
   });
 });
 
+describe('urgency for fever in older adults, headache with vision changes or a rash, and hearing loss', () => {
+  const outcome = (facts: FactMap) => {
+    const all = { ...adult, ...facts };
+    return evaluateUrgency(demoBundle, all, detectConcerns(demoBundle, all));
+  };
+  const level = (facts: FactMap) => outcome(facts).level;
+  const rank = (facts: FactMap) => urgencyRank(level(facts));
+  const old = { age: P(70) };
+
+  it('never gives an older adult with a fever less urgent advice than a younger one, whatever the main symptom', () => {
+    const combos: FactMap[] = [
+      { fever: P() },
+      { fever: P(), body_aches: P() },
+      { fever: P(), headache: P() },
+      { fever: P(), cough: P() },
+      { fever: P(), sore_throat: P() },
+      { fever: P(), diarrhoea: P() },
+      { fever: P(), runny_nose: P() },
+    ];
+    for (const c of combos) expect(rank({ ...c, ...old }), JSON.stringify(c)).toBeGreaterThanOrEqual(rank(c));
+    for (const c of combos) expect(rank({ ...c, ...old }), JSON.stringify(c)).toBeGreaterThanOrEqual(urgencyRank('soon'));
+  });
+
+  it('sends an older adult with a fever and flu-like symptoms to a doctor the same day, in any concern', () => {
+    for (const symptom of ['body_aches', 'headache', 'cough']) {
+      const o = outcome({ ...old, fever: P(), [symptom]: P() });
+      expect(o.level, symptom).toBe('urgent');
+      expect(o.triggered.map((t) => t.ruleId), symptom).toContain('r_flu_higher_risk');
+    }
+    expect(outcome({ fever: P(), body_aches: P() }).triggered.map((t) => t.ruleId)).not.toContain('r_flu_higher_risk');
+  });
+
+  it('treats a headache with vision problems as same-day, and loss of vision or bright light bothering them as an emergency', () => {
+    expect(level({ headache: P(), vision_change: P() })).toBe('urgent');
+    expect(level({ headache: P(), fever: P(), vision_change: P() })).not.toMatch(/self_care|routine|soon/);
+    expect(level({ headache: P(), vision_loss: P() })).toBe('emergency');
+    expect(level({ headache: P(), light_sensitivity: P() })).toBe('emergency');
+  });
+
+  it('keeps an ordinary rash with a headache from becoming an emergency, but not a rash that doesn’t fade or comes with a fever', () => {
+    const plain = outcome({ headache: P(), rash: P(), fever: A, nonblanching_rash: A });
+    expect(plain.level).not.toBe('emergency');
+    expect(plain.triggered.map((t) => t.ruleId)).not.toContain('warn:ci_headache_monitor');
+    expect(level({ headache: P(), rash: P(), nonblanching_rash: P() })).toBe('emergency');
+    expect(level({ headache: P(), rash: P(), fever: P() })).not.toMatch(/self_care|routine|soon/);
+  });
+
+  it('treats a change in hearing with earache, or sudden hearing loss with any symptom, as same-day', () => {
+    expect(level({ ear_pain: P(), hearing_loss: P() })).toBe('urgent');
+    expect(level({ dizziness: P(), hearing_loss: P(), hearing_loss_sudden: P() })).toBe('urgent');
+    expect(level({ headache: P(), hearing_loss: P(), hearing_loss_sudden: P() })).toBe('urgent');
+    expect(outcome({ dizziness: P(), hearing_loss: P(), hearing_loss_sudden: A }).triggered.map((t) => t.ruleId)).toContain('r_hearing_gradual');
+    const plan = planQuestions(demoBundle, { ...adult, dizziness: P(), hearing_loss: P() }, detectConcerns(demoBundle, { dizziness: P() }), new Set());
+    expect(plan.map((p) => p.id)).toContain('q_hearing_sudden');
+  });
+});
+
 describe('unknown answers', () => {
   it('never treats "not sure" about a bite warning sign as a no', async () => {
-    const out = await runAssessment(deps('off'), input({ animal_bite: P(), exposure_days: P(2), bite_bleeding: U, snake_bite: A, breathless_severe: A, lip_throat_swelling: A }));
+    const out = await runAssessment(deps('off'), input({ animal_bite: P(), animal_bite_days: P(2), bite_bleeding: U, snake_bite: A, breathless_severe: A, lip_throat_swelling: A }));
     const r = out.result!;
     expect(r.triage!.missingSafety.map((m) => m.key)).toContain('bite_bleeding');
     expect(r.urgency.reasons.map((x) => x.ruleId)).toContain('unresolved_safety');
@@ -169,15 +310,16 @@ describe('history isolation', () => {
       { id: 'M1', kind: 'past_check', label: 'Earlier check', text: 'Headache with a stiff neck', recordedAt: '2026-10-01T00:00:00Z', href: '/summary/a', checkId: 'a', concernCode: 'headache' },
       { id: 'M2', kind: 'allergy', label: 'Allergy', text: 'Penicillin', recordedAt: '2026-01-01T00:00:00Z', href: '/settings' },
     ];
-    expect(relevantMemory(memory, ['sore_throat']).map((m) => m.id)).toEqual(['M2']);
-    expect(relevantMemory(memory, ['headache']).map((m) => m.id)).toEqual(['M1', 'M2']);
+    const now = new Date('2026-10-13T00:00:00Z');
+    expect(relevantMemory(memory, null, recurrence(demoBundle, ['sore_throat'], memory, now)).map((m) => m.id)).toEqual(['M2']);
+    expect(relevantMemory(memory, null, recurrence(demoBundle, ['headache'], memory, now)).map((m) => m.id)).toEqual(['M1', 'M2']);
   });
 });
 
 describe('triage consistency', () => {
   const cases: [string, FactMap, string | undefined][] = [
     ['sore throat with fever and glands', { sore_throat: P(), fever: P(), temperature_c: P(38.4), swollen_glands: P(), cough: A, duration_days: P(3) }, undefined],
-    ['animal bite', { animal_bite: P(), exposure_days: P(1), bite_bleeding: A, snake_bite: A }, undefined],
+    ['animal bite', { animal_bite: P(), animal_bite_days: P(1), bite_bleeding: A, snake_bite: A }, undefined],
     ['cold without warning signs', { runny_nose: P(), fever: A, duration_days: P(2) }, undefined],
     ['fever for four days', { fever: P(), duration_days: P(4), rash: A }, undefined],
   ];
@@ -193,32 +335,73 @@ describe('triage consistency', () => {
 
 describe('citations support their claims', () => {
   const sources = new Map(demoKnowledge.map((k) => [k.sourceKey, k]));
-  const claims = [
-    ...demoBundle.urgencyRules.map((r) => ({ id: r.id, text: r.message, sourceKey: r.sourceKey, heading: r.sourceHeading })),
-    ...Object.entries(demoBundle.careItems).map(([id, c]) => ({ id, text: c.text, sourceKey: c.sourceKey, heading: c.sourceHeading })),
+  type Claim = { id: string; text: string; sourceKey: string; heading?: string; review?: string; level?: UrgencyLevel };
+  const claims: Claim[] = [
+    ...demoBundle.urgencyRules.map((r) => ({ id: r.id, text: r.message, sourceKey: r.sourceKey, heading: r.sourceHeading, review: r.review, level: r.level })),
+    ...Object.entries(demoBundle.careItems).map(([id, c]) => ({ id, text: c.text, sourceKey: c.sourceKey, heading: c.sourceHeading, review: c.review })),
     ...demoBundle.concerns.flatMap((c) => c.information.map((i) => ({ id: i.code, text: i.text, sourceKey: i.sourceKey, heading: i.sourceHeading }))),
   ];
+  const cited = claims.filter((c) => c.heading);
+  const passageOf = (c: Claim) => sources.get(c.sourceKey)!.chunks.find((x) => x.heading === c.heading)!;
+  const numbers = (text: string) => (text.replace(/\b(112|14416|24–48)\b/g, '').match(/\d+(\.\d+)?/g) ?? []).map(Number);
+  const conditions = (text: string) => (text.toLowerCase().match(new RegExp(`\\b${CONDITION}\\b`, 'g')) ?? []).map((w) => w.replace(/s$/, ''));
 
-  /** Steps that only say where and when to get care; their support is the urgency reason, so they carry no citation. */
-  const NAVIGATION = new Set(['ci_urgent_today', 'ci_soon_gp']);
+  it('every urgency rule names the passage behind it, or says what a clinician still has to decide', () => {
+    expect(demoBundle.urgencyRules.filter((r) => !r.sourceHeading && !r.review).map((r) => r.id)).toEqual([]);
+  });
 
-  it.each(claims.map((c) => [c.id, c] as const))('%s cites a passage that exists and says the same thing', (id, c) => {
+  it.each(cited.map((c) => [c.id, c] as const))('%s cites a passage that exists and says the same thing', (_id, c) => {
     const source = sources.get(c.sourceKey);
     expect(source, `missing source ${c.sourceKey}`).toBeDefined();
-    if (c.heading) expect(source!.chunks.map((x) => x.heading)).toContain(c.heading);
+    expect(source!.chunks.map((x) => x.heading)).toContain(c.heading);
     const passage = bestPassage(source!.chunks, c.text, c.heading)!;
-    if (NAVIGATION.has(id)) {
-      expect(supports(passage, c.text, c.heading)).toBe(false);
-      return;
-    }
+    expect(passage.heading).toBe(c.heading);
     expect(supports(passage, c.text, c.heading)).toBe(true);
-    expect(claimOverlap(c.text, passage.text)).toBeGreaterThanOrEqual(c.heading ? 1 : MIN_SUPPORT);
+    expect(claimOverlap(c.text, passage.text)).toBeGreaterThanOrEqual(1);
+  });
+
+  it('only cites numbers its passage gives, unless a clinician has to review them', () => {
+    const unsupported = cited.filter((c) => !c.review).flatMap((c) => {
+      const given = new Set(numbers(passageOf(c).text));
+      return numbers(c.text).filter((n) => !given.has(n)).map((n) => `${c.id}: ${n}`);
+    });
+    expect(unsupported).toEqual([]);
+  });
+
+  it('names a condition only when its passage names it', () => {
+    const unsupported = cited.flatMap((c) => {
+      const named = new Set(conditions(passageOf(c).text + ' ' + passageOf(c).heading));
+      return conditions(c.text).filter((w) => !named.has(w)).map((w) => `${c.id}: ${w}`);
+    });
+    expect(unsupported).toEqual([]);
+  });
+
+  it('is never less urgent than the passage it cites, unless a clinician has to review it', () => {
+    const below = cited.filter((c) => {
+      const tier = passageOf(c).tier;
+      return c.level && tier && !c.review && urgencyRank(c.level) < urgencyRank(tier);
+    });
+    expect(below.map((c) => `${c.id} ${c.level} < ${passageOf(c).tier}`)).toEqual([]);
+  });
+
+  it('cites general fever information to the general fever page, not to a page about one disease', () => {
+    const fever = demoBundle.concerns.find((c) => c.code === 'fever')!;
+    for (const key of fever.sourceKeys) expect(conditions(sources.get(key)!.title).filter((d) => d !== 'flu'), key).toEqual([]);
+    const searchable = demoKnowledge.filter((k) => k.concernCodes.includes('fever')).map((k) => k.title.toLowerCase());
+    expect(searchable.join(' ')).not.toMatch(/dengue|malaria|typhoid/);
+    for (const i of fever.information) {
+      const title = sources.get(i.sourceKey)!.title.toLowerCase();
+      const diseases = conditions(title);
+      for (const d of diseases) expect(i.text.toLowerCase(), `${i.code} cites ${title}`).toContain(d);
+    }
   });
 
   it('shows no citation rather than an unrelated one', async () => {
     const r = (await runAssessment(deps('off'), input({ sore_throat: P(), fever: P(), temperature_c: P(38.4), swollen_glands: P(), cough: A, duration_days: P(3) }))).result!;
-    expect(r.urgency.level).toBe('soon');
-    expect(r.carePlan.find((c) => c.id === 'ci_soon_gp')!.citations).toEqual([]);
+    expect(r.urgency.level).toBe('urgent');
+    expect(r.carePlan.find((c) => c.id === 'ci_urgent_today')!.citations).toEqual([]);
+    const older = (await runAssessment(deps('off'), input({ age: P(70), fever: P(), duration_days: P(1), rash: A }))).result!;
+    expect(older.urgency.reasons.find((x) => x.ruleId === 'r_older_fever')!.citations).toEqual([]);
     const byId = new Map(r.evidence.map((e) => [e.citationId, e]));
     const items = [...r.urgency.reasons.map((x) => ({ text: x.message, citations: x.citations })), ...r.carePlan, ...(r.information ?? [])];
     for (const item of items) for (const id of item.citations) expect(claimOverlap(item.text, byId.get(id)!.excerpt)).toBeGreaterThanOrEqual(1);
@@ -230,7 +413,7 @@ describe('citations support their claims', () => {
   });
 
   it('cites the passage each care item and topic names in a finished result', async () => {
-    const r = (await runAssessment(deps('off'), input({ animal_bite: P(), exposure_days: P(1), bite_bleeding: A, snake_bite: A }))).result!;
+    const r = (await runAssessment(deps('off'), input({ animal_bite: P(), animal_bite_days: P(1), bite_bleeding: A, snake_bite: A }))).result!;
     const byId = new Map(r.evidence.map((e) => [e.citationId, e]));
     const wash = r.carePlan.find((c) => c.id === 'ci_bite_wash')!;
     expect(byId.get(wash.citations[0]!)).toMatchObject({ sourceKey: 'src_rabies', heading: 'First aid' });

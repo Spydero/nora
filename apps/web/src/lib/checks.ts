@@ -35,6 +35,10 @@ export interface FindingItem {
   source: string;
   /** The patient's own words this was read from, when it came from a message. */
   said?: string;
+  /** For an exposure: how many days ago that particular exposure happened. */
+  daysAgo?: number;
+  /** The patient's own words for when the exposure happened. */
+  whenSaid?: string;
 }
 
 export interface EvidenceRef {

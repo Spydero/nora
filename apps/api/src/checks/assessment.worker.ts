@@ -10,12 +10,14 @@ import type { AnswerConflict } from '../assessment/result.types.js';
 import type { BundleContent } from '../clinical/bundle.schema.js';
 import { type FactMap, quantity } from '../clinical/rules-engine.js';
 import type { Env } from '../config/env.js';
+import { ConsentService } from '../consent/consent.service.js';
+import { type StopReason, stopQueuedAssessments } from '../consent/processing-stop.js';
 import { Prisma } from '../generated/prisma/client.js';
 import { DbKnowledge } from '../knowledge/db-knowledge.js';
 import { MemoryService } from '../memory/memory.service.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { CaseStore, type FactProvenance } from './case-store.js';
-import { ASSESS_JOB } from './checks.service.js';
+import { ASSESS_JOB } from '../consent/processing-stop.js';
 
 interface ClaimedJob {
   id: string;
@@ -49,6 +51,7 @@ export class AssessmentWorker implements OnModuleInit, OnModuleDestroy {
     private readonly ai: AiService,
     private readonly memory: MemoryService,
     private readonly config: ConfigService<Env, true>,
+    private readonly consent: ConsentService,
   ) {}
 
   onModuleInit() {
@@ -90,13 +93,13 @@ export class AssessmentWorker implements OnModuleInit, OnModuleDestroy {
   private async run(job: ClaimedJob) {
     try {
       await this.assess(job, job.attempts >= MAX_ATTEMPTS);
-      await this.prisma.outboxJob.update({ where: { id: job.id }, data: { status: 'DONE', completedAt: new Date(), lockedAt: null } });
+      await this.prisma.outboxJob.updateMany({ where: { id: job.id, status: 'RUNNING' }, data: { status: 'DONE', completedAt: new Date(), lockedAt: null } });
     } catch (error) {
       const message = (error as Error).message.slice(0, 500);
       this.logger.warn(`Assessment job ${job.id} attempt ${job.attempts} failed: ${message}`);
       const exhausted = job.attempts >= MAX_ATTEMPTS;
-      await this.prisma.outboxJob.update({
-        where: { id: job.id },
+      await this.prisma.outboxJob.updateMany({
+        where: { id: job.id, status: 'RUNNING' },
         data: exhausted
           ? { status: 'FAILED', lastError: message, lockedAt: null }
           : { status: 'PENDING', lastError: message, lockedAt: null, runAfter: new Date(Date.now() + 1000 * 2 ** job.attempts) },
@@ -108,7 +111,13 @@ export class AssessmentWorker implements OnModuleInit, OnModuleDestroy {
   private async assess(job: ClaimedJob, templateOnly: boolean) {
     const inputVersion = job.payload.inputVersion ?? -1;
     const session = await this.prisma.assessmentSession.findUnique({ where: { id: job.resource_id } });
-    if (!session || session.inputVersion !== inputVersion) return;
+    if (!session || session.inputVersion !== inputVersion || session.status !== 'ASSESSING') return;
+    const scope = { tenantId: session.tenantId, userId: session.patientUserId, sessionIds: [session.id] };
+    const stop = await this.stopReason(session.tenantId, session.patientUserId);
+    if (stop) {
+      await this.prisma.$transaction((tx) => stopQueuedAssessments(tx, scope, stop));
+      return;
+    }
 
     const [bundle, tenantCtx, facts, asked, message, memory, watchTerms, conflictEvents] = await Promise.all([
       this.store.bundle(session.bundleId),
@@ -116,7 +125,7 @@ export class AssessmentWorker implements OnModuleInit, OnModuleDestroy {
       this.store.facts(this.prisma, session.id),
       this.store.askedQuestions(this.prisma, session.id),
       job.payload.messageId ? this.prisma.message.findUnique({ where: { id: job.payload.messageId } }) : null,
-      this.memory.forPatient(session.tenantId, session.patientUserId, { excludeSessionId: session.id }),
+      this.memory.forPatient(session.tenantId, session.patientUserId, { excludeSessionId: session.id, includeCheckId: session.parentSessionId }),
       this.watchTerms(session.tenantId),
       this.prisma.sessionEvent.findMany({ where: { sessionId: session.id, type: 'answer_conflict' }, orderBy: { sequence: 'asc' } }),
     ]);
@@ -181,8 +190,13 @@ export class AssessmentWorker implements OnModuleInit, OnModuleDestroy {
     for (const o of out.observations) provenance[o.factKey] = { quote: o.said ?? o.quote, assertion: o.assertion, sourceMessageId: message?.id };
 
     await this.prisma.$transaction(async (tx) => {
-      const current = await tx.assessmentSession.updateMany({ where: { id: session.id, inputVersion }, data: { version: { increment: 1 } } });
+      const current = await tx.assessmentSession.updateMany({ where: { id: session.id, inputVersion, status: 'ASSESSING' }, data: { version: { increment: 1 } } });
       if (current.count !== 1) return;
+      const late = await this.stopReason(session.tenantId, session.patientUserId);
+      if (late) {
+        await stopQueuedAssessments(tx, scope, late);
+        return;
+      }
 
       await this.store.writeFacts(tx, session.id, changes, inputVersion, provenance);
       for (const c of out.conflicts) {
@@ -287,6 +301,13 @@ export class AssessmentWorker implements OnModuleInit, OnModuleDestroy {
       });
       await this.store.event(tx, job.resource_id, 'error');
     });
+  }
+
+  /** Consent can be withdrawn, or checks switched off, while a job waits in the queue or runs. */
+  private async stopReason(tenantId: string, userId: string): Promise<StopReason | null> {
+    if (!(await this.store.tenantContext(tenantId)).assessmentEnabled) return 'assessment_disabled';
+    if (!(await this.consent.hasGranted(tenantId, userId, 'PROCESSING'))) return 'consent_withdrawn';
+    return null;
   }
 
   /** Medicine names from the approved library plus common long-term conditions; drafts may only name them when grounded. */

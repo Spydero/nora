@@ -1,7 +1,8 @@
 import { type BundleContent, type ConcernDef, type UrgencyLevel, maxUrgency, urgencyRank } from '../../clinical/bundle.schema.js';
-import { evaluate, type FactMap, quantity, type TriggeredRule, type UrgencyOutcome, warningLevel } from '../../clinical/rules-engine.js';
+import { evaluate, exposureTiming, type FactMap, quantity, type TriggeredRule, type UrgencyOutcome, warningLevel } from '../../clinical/rules-engine.js';
 import { type MemoryItem, memoryLine } from '../../memory/memory.types.js';
 import type { TriageDecision } from '../../clinical/triage.js';
+import { UNLINKED_EXPOSURE_TIMING } from '../extraction/rule-extractor.js';
 import type { AnswerConflict, EpisodeContext, FindingItem, Generator, ResultContent, ResultStatus } from '../result.types.js';
 import { SELF_RESOLVING } from './consistency.js';
 import type { EvidenceRegistry } from './evidence-registry.js';
@@ -30,25 +31,33 @@ const READ_FROM_MESSAGE = new Set(['rules', 'llm']);
 /**
  * Findings are what the patient told Nora in this check, as present, absent
  * or unknown. Long-term history (from the answers or the profile) and
- * exposures such as a bite are kept apart from the consultation's symptoms;
- * facts derived from memory and context such as age are not findings. Facts
- * read from a message keep the patient's own words.
+ * exposures such as a bite are kept apart from the consultation's symptoms,
+ * each with how long ago it happened; facts derived from memory and context
+ * such as age are not findings. Facts read from a message keep the patient's
+ * own words.
  */
 export function findings(bundle: BundleContent, facts: FactMap): ResultContent['findings'] {
   const out: ResultContent['findings'] = { present: [], absent: [], unknown: [] };
   const history: NonNullable<ResultContent['findings']['history']> = { present: [], absent: [], unknown: [] };
   const exposures: FindingItem[] = [];
+  const saidIn = (f: FactMap[string]) => (f.quote && READ_FROM_MESSAGE.has(f.source ?? '') ? f.quote : undefined);
+  const timingOf = new Map([...exposureTiming(bundle)].filter(([exposure]) => facts[exposure]?.state === 'PRESENT').map(([exposure, timing]) => [timing, exposure]));
   for (const [key, f] of Object.entries(facts)) {
     const def = bundle.facts[key];
-    if (!def || def.kind === 'context' || key === 'age' || f.source === 'memory') continue;
+    if (!def || def.kind === 'context' || key === 'age' || f.source === 'memory' || timingOf.has(key)) continue;
+    const said = saidIn(f);
     const item: FindingItem = {
       key,
       label: def.label,
       source: f.source ?? 'unknown',
       ...(def.type === 'number' ? { value: f.value ?? null, unit: def.unit } : {}),
-      ...(f.quote && READ_FROM_MESSAGE.has(f.source ?? '') ? { said: f.quote } : {}),
+      ...(said ? { said } : {}),
     };
     if (def.kind === 'exposure' && f.state === 'PRESENT') {
+      const when = def.timing ? facts[def.timing] : undefined;
+      const whenSaid = when ? saidIn(when) : undefined;
+      if (when?.state === 'PRESENT' && typeof when.value === 'number') item.daysAgo = when.value;
+      if (whenSaid) item.whenSaid = whenSaid;
       exposures.push(item);
       continue;
     }
@@ -66,12 +75,20 @@ export function findings(bundle: BundleContent, facts: FactMap): ResultContent['
 
 /**
  * Records that belong in this consultation: the patient's profile and
- * appointments, plus earlier checks for the same problem or the check this
- * one follows up. Unrelated earlier checks are left out so their symptoms
- * can't leak into a new assessment.
+ * appointments, plus one earlier check, the one this check is about: the
+ * check it follows up, otherwise the recent check for the same problem that
+ * Nora asks about. Other earlier checks are left out so their symptoms can't
+ * leak into a new assessment, and no check is listed twice.
  */
-export function relevantMemory(memory: MemoryItem[], concerns: string[], parentCheckId?: string | null): MemoryItem[] {
-  return memory.filter((m) => m.kind !== 'past_check' || (!!parentCheckId && m.checkId === parentCheckId) || (!!m.concernCode && concerns.includes(m.concernCode)));
+export function relevantMemory(memory: MemoryItem[], parentCheckId: string | null | undefined, earlier: MemoryItem | null): MemoryItem[] {
+  const keep = parentCheckId ? parentCheckId : earlier?.checkId;
+  const seen = new Set<string>();
+  return memory.filter((m) => {
+    if (m.kind !== 'past_check') return true;
+    if (!m.checkId || m.checkId !== keep || seen.has(m.checkId)) return false;
+    seen.add(m.checkId);
+    return true;
+  });
 }
 
 export function caseSummary(bundle: BundleContent, facts: FactMap, concerns: string[], urgency: UrgencyOutcome | null, memory: MemoryItem[]) {
@@ -81,7 +98,7 @@ export function caseSummary(bundle: BundleContent, facts: FactMap, concerns: str
     age: facts.age?.value ?? null,
     concerns: concernDefs(bundle, concerns).map((c) => ({ code: c.code, label: c.label })),
     thisConsultation: { present: f.present.map(fmt), absent: f.absent.map(fmt), unknown: f.unknown.map(fmt) },
-    exposures: (f.exposures ?? []).map(fmt),
+    exposures: (f.exposures ?? []).map((i) => `${fmt(i)}${i.daysAgo === undefined ? '' : ` (${agoText(i.daysAgo)})`}`),
     healthBackground: { present: (f.history?.present ?? []).map(fmt), absent: (f.history?.absent ?? []).map(fmt) },
     urgency: urgency ? { level: urgency.level, reasons: urgency.triggered.map((t) => t.message), final: true } : null,
     records: memory.map(memoryLine),
@@ -116,6 +133,11 @@ export function episodeContext(facts: FactMap, prior: MemoryItem | null): Episod
     : { earlier, answer: null, label: 'Nora assessed this check on its own.' };
 }
 
+/** "today", "about 1 day ago", "about 5 days ago". */
+export function agoText(days: number): string {
+  return days < 1 ? 'today' : `about ${quantity(days, 'days')} ago`;
+}
+
 /** Days since a recorded date, rounded down. */
 export function daysSince(iso: string | undefined, now: Date): number | null {
   const t = Date.parse(iso ?? '');
@@ -136,8 +158,14 @@ export function recordQuestions(memory: MemoryItem[]): { questions: string[]; re
   };
 }
 
-/** The passage of the source that supports this particular claim. */
+/**
+ * The passage of the source that supports this particular claim. Content that
+ * names no passage (Nora's own thresholds awaiting a clinician's review, and
+ * plain "where to get care" steps) is shown without a citation rather than
+ * with a loosely related one.
+ */
 function cite(registry: EvidenceRegistry, sourceKey: string, claim: string, heading?: string): string[] {
+  if (!heading) return [];
   const id = registry.forClaim(sourceKey, claim, heading);
   return id ? [id] : [];
 }
@@ -215,16 +243,17 @@ export function templateDraft(bundle: BundleContent, facts: FactMap, memory: Mem
       .filter(([k, f]) => f.state === 'PRESENT' && f.source !== 'memory' && bundle.facts[k]?.type === 'boolean' && bundle.facts[k]?.kind === kind)
       .map(([k]) => label(k));
   const symptoms = presentOf('symptom');
-  const exposures = presentOf('exposure');
+  const exposures = (findings(bundle, facts).exposures ?? []).filter((i) => bundle.facts[i.key]?.type === 'boolean');
   const days = facts.duration_days?.state === 'PRESENT' ? Number(facts.duration_days.value) : null;
   const duration = days === null ? '' : days < 1 ? ' since today' : ` for about ${quantity(days, 'days')}`;
-  const ago = facts.exposure_days?.state === 'PRESENT' ? Number(facts.exposure_days.value) : null;
-  const when = ago === null ? '' : ago < 1 ? ' (today)' : ` (about ${quantity(ago, 'days')} ago)`;
+  const unlinked = facts[UNLINKED_EXPOSURE_TIMING]?.state === 'PRESENT' ? Number(facts[UNLINKED_EXPOSURE_TIMING]!.value) : null;
+  const told = exposures.map((i) => `${i.label.toLowerCase()}${i.daysAgo === undefined ? '' : ` (${agoText(i.daysAgo)})`}`);
 
   return {
     summary: [
       symptoms.length || !exposures.length ? `You described ${symptoms.length ? listText(symptoms) : 'your symptoms'}${duration}.` : '',
-      exposures.length ? `You ${symptoms.length ? 'also ' : ''}told Nora about: ${listText(exposures)}${when}.` : '',
+      exposures.length ? `You ${symptoms.length ? 'also ' : ''}told Nora about: ${listText(told)}.` : '',
+      unlinked === null ? '' : `You said something you were exposed to happened ${agoText(unlinked)}.`,
     ]
       .filter(Boolean)
       .join(' '),

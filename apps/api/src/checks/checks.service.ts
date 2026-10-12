@@ -5,14 +5,17 @@ import { historyFacts, type ProfileList } from '../memory/history-facts.js';
 import { detectConcerns, type FactMap, planQuestions, presentQuestion, QUESTION_REASON_TEXT } from '../clinical/rules-engine.js';
 import { AppException } from '../common/app.exception.js';
 import { ConsentService } from '../consent/consent.service.js';
+import { ASSESS_JOB } from '../consent/processing-stop.js';
 import { Prisma } from '../generated/prisma/client.js';
 import { PrismaService } from '../prisma/prisma.service.js';
+import { MemoryService } from '../memory/memory.service.js';
+import { recurrence } from '../assessment/graph/compose.js';
 import type { ResultContent } from '../assessment/result.types.js';
 import { type AnswerValue, InvalidAnswerError, mapAnswer } from './answer-mapping.js';
 import { CaseStore, type Db } from './case-store.js';
 import { buildDoctorSummary, type DoctorSummary } from './doctor-summary.js';
 
-export const ASSESS_JOB = 'assess';
+export { ASSESS_JOB };
 
 export interface QuestionView {
   id: string;
@@ -66,6 +69,7 @@ export class ChecksService {
     private readonly prisma: PrismaService,
     private readonly store: CaseStore,
     private readonly consent: ConsentService,
+    private readonly memory: MemoryService,
   ) {}
 
   async create(principal: AuthPrincipal, idempotencyKey: string, parentId?: string): Promise<CheckView> {
@@ -222,7 +226,7 @@ export class ChecksService {
     const q = defined ? presentQuestion(defined, facts) : undefined;
     const plan = defined ? planQuestions(bundle, facts, detectConcerns(bundle, facts), new Set(await this.store.askedQuestions(this.prisma, id))) : [];
     const reason = plan.find((p) => p.id === session.pendingQuestionId)?.reason ?? null;
-    const earlierCheck = session.pendingQuestionId && session.pendingQuestionId === bundle.episodeQuestion ? await this.earlierCheck(session, bundle) : null;
+    const earlierCheck = session.pendingQuestionId && session.pendingQuestionId === bundle.episodeQuestion ? await this.earlierCheck(session, bundle, facts) : null;
     return {
       id: session.id,
       status: session.status,
@@ -329,26 +333,21 @@ export class ChecksService {
     return this.view(principal, id);
   }
 
-  /** The most recent finished check for the same problem inside the bundle's recurrence window, as the assessment sees it. */
+  /** The recent check for the same problem that the assessment asks about, chosen the same way the assessment chooses it. */
   private async earlierCheck(
-    session: { id: string; tenantId: string; patientUserId: string; parentSessionId: string | null; concernCode: string | null; createdAt: Date },
+    session: { id: string; tenantId: string; patientUserId: string; parentSessionId: string | null },
     bundle: BundleContent,
+    facts: FactMap,
   ): Promise<QuestionView['earlierCheck']> {
-    if (!session.concernCode) return null;
+    if (session.parentSessionId) return null;
+    const memory = await this.memory.forPatient(session.tenantId, session.patientUserId, { excludeSessionId: session.id });
+    const prior = recurrence(bundle, detectConcerns(bundle, facts).map((c) => c.code), memory, new Date());
+    if (!prior?.checkId) return null;
     const earlier = await this.prisma.assessmentSession.findFirst({
-      where: {
-        tenantId: session.tenantId,
-        patientUserId: session.patientUserId,
-        concernCode: session.concernCode,
-        status: { in: ['COMPLETED', 'INCOMPLETE', 'ESCALATED'] },
-        currentResultId: { not: null },
-        createdAt: { gte: new Date(Date.now() - bundle.meta.recurrenceDays * 86_400_000) },
-        id: { notIn: [session.id, ...(session.parentSessionId ? [session.parentSessionId] : [])] },
-      },
-      orderBy: { createdAt: 'desc' },
+      where: { id: prior.checkId, tenantId: session.tenantId, patientUserId: session.patientUserId },
       select: { id: true, title: true, createdAt: true, currentResultId: true },
     });
-    if (!earlier) return null;
+    if (!earlier?.currentResultId) return null;
     const result = await this.prisma.assessmentResult.findUnique({ where: { id: earlier.currentResultId! }, select: { content: true } });
     const content = result?.content as unknown as ResultContent | undefined;
     return { id: earlier.id, title: earlier.title, createdAt: earlier.createdAt.toISOString(), advice: content?.urgency.title ?? null };

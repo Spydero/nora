@@ -100,11 +100,13 @@ export function saidAround(original: string, index: number): string | undefined 
 }
 
 /** The segment of the message containing a verbatim quote, for checking what a model-read number refers to. */
-export function segmentOf(message: string, quote: string): string | undefined {
+/** What the part of the message holding this quote is about, the way Nora reads times in it. */
+export function timeContext(bundle: BundleContent, message: string, quote: string): string | undefined {
   const lower = message.toLowerCase();
   const at = lower.indexOf(quote.toLowerCase().trim());
   if (at < 0) return undefined;
-  return segments(lower, true).find((s) => at >= s.start && at < s.start + s.text.length)?.text;
+  const seg = segments(lower, true).find((s) => at >= s.start && at < s.start + s.text.length);
+  return seg ? aboutText(bundle, lower, seg) : undefined;
 }
 
 interface TimeHit {
@@ -169,25 +171,65 @@ export function timeRole(bundle: BundleContent, text: string): 'history' | 'expo
   return null;
 }
 
+/** Holds how long ago an exposure happened when the message doesn't say which exposure it was. */
+export const UNLINKED_EXPOSURE_TIMING = 'exposure_days';
+
+const timedExposures = (bundle: BundleContent) => Object.entries(bundle.facts).filter(([, f]) => f.kind === 'exposure' && f.type === 'boolean' && f.timing);
+const names = (text: string, synonyms: string[]) => synonyms.some((p) => phrasePattern(p).test(text));
+
 /**
- * How long symptoms have lasted and how long ago an exposure happened, kept
+ * The timing fact a time written in an exposure part of the message belongs
+ * to: the one exposure that part names, otherwise the only exposure the whole
+ * message names. When it can't be tied to exactly one exposure it goes to the
+ * unlinked timing when the bundle has one, and is otherwise left for Nora to ask.
+ */
+export function timingTargets(bundle: BundleContent, message: string, part: string): string[] {
+  const exposures = timedExposures(bundle);
+  const lowerPart = part.toLowerCase();
+  const named = exposures.filter(([, f]) => names(lowerPart, f.synonyms));
+  const inMessage = exposures.filter(([, f]) => names(message.toLowerCase(), f.synonyms));
+  const linked = named.length ? named : inMessage;
+  if (linked.length === 1) return [linked[0]![1].timing!];
+  return bundle.facts[UNLINKED_EXPOSURE_TIMING] ? [UNLINKED_EXPOSURE_TIMING] : [];
+}
+
+/** "It happened 3 days ago", "That was last week": a time that refers back to the sentence before. */
+const REFERS_BACK = /^\s*(it|this|that|they|these|both|all of this)\b/;
+
+/**
+ * The text a time is about: the part it is written in, or, when that part
+ * only refers back and names nothing itself, the sentence before it.
+ */
+function aboutText(bundle: BundleContent, lower: string, seg: { text: string; start: number }): string {
+  if (!REFERS_BACK.test(seg.text) || Object.values(bundle.facts).some((f) => names(seg.text, f.synonyms))) return seg.text;
+  const before = [...lower.slice(0, seg.start).matchAll(/[^.;!?\n]+/g)].map((m) => m[0]).filter((s) => s.trim());
+  return before.at(-1) ?? seg.text;
+}
+
+/**
+ * How long symptoms have lasted and how long ago each exposure happened, kept
  * apart. When the message gives different durations for different symptoms
  * ("cough for 2 weeks, fever for 3 days") the longest is used, because every
  * duration rule asks whether symptoms have lasted at least so long; each
- * symptom keeps its own timing in the patient's words.
+ * symptom keeps its own timing in the patient's words. Each exposure keeps
+ * the first time written next to it.
  */
-function timeline(bundle: BundleContent, message: string): { onset: TimeHit | null; exposure: TimeHit | null } {
+function timeline(bundle: BundleContent, message: string): { onset: TimeHit | null; exposures: Map<string, TimeHit> } {
   const lower = message.toLowerCase();
   let onset: TimeHit | null = null;
-  let exposure: TimeHit | null = null;
+  const exposures = new Map<string, TimeHit>();
   for (const seg of segments(lower, true)) {
     const spans = timeSpans(seg.text, seg.start);
     if (!spans.length) continue;
-    const role = timeRole(bundle, seg.text);
-    if (role === 'exposure') exposure ??= spans[0]!;
-    else if (role === 'onset') for (const s of spans) if (!onset || s.value > onset.value) onset = s;
+    const about = aboutText(bundle, lower, seg);
+    const role = timeRole(bundle, about);
+    if (role === 'exposure') {
+      for (const key of timingTargets(bundle, lower, about)) if (!exposures.has(key)) exposures.set(key, spans[0]!);
+    } else if (role === 'onset') {
+      for (const s of spans) if (!onset || s.value > onset.value) onset = s;
+    }
   }
-  return { onset, exposure };
+  return { onset, exposures };
 }
 
 function temperatureC(text: string): { value: number; index: number; length: number } | null {
@@ -277,7 +319,7 @@ function scan(bundle: BundleContent, message: string): Observation[] {
   const numeric: [string, ReturnType<typeof age>][] = [
     ['age', age(message)],
     ['duration_days', times.onset],
-    ['exposure_days', times.exposure],
+    ...times.exposures,
     ['temperature_c', temperatureC(message)],
     ['pain_score', painScore(message)],
   ];

@@ -56,6 +56,8 @@ const factSchema = z.object({
    * timeline and are never counted as a symptom or its onset.
    */
   kind: z.enum(FACT_KINDS).default('symptom'),
+  /** For an exposure: the number fact holding how many days ago that particular exposure happened. */
+  timing: z.string().optional(),
 });
 
 const optionSchema = z.object({
@@ -141,6 +143,12 @@ const ruleSchema = z.object({
   careItems: z.array(z.string()).default([]),
   sourceKey: z.string(),
   sourceHeading: z.string().optional(),
+  /**
+   * Why this rule needs a clinician's decision: no cited source supports its
+   * threshold or level, or it departs from the level its source gives. A rule
+   * with a review note and no `sourceHeading` is shown without a citation.
+   */
+  review: z.string().optional(),
 });
 
 const exclusionSchema = z.object({
@@ -155,6 +163,8 @@ const careItemSchema = z.object({
   timeframe: z.string().optional(),
   sourceKey: z.string(),
   sourceHeading: z.string().optional(),
+  /** As for rules: what in this item a clinician still needs to decide. */
+  review: z.string().optional(),
   /**
    * For "get help if…" items: the conditions the text describes and the level
    * they call for. If one already holds, the warning has happened, so the
@@ -214,6 +224,12 @@ export const bundleContentSchema = z
       else if (!facts.has(c.fact)) issue(`${where} references unknown fact "${c.fact}"`);
     };
 
+    for (const [key, f] of Object.entries(content.facts)) {
+      if (!f.timing) continue;
+      const timing = content.facts[f.timing];
+      if (f.kind !== 'exposure' || f.type !== 'boolean') issue(`fact ${key} has a timing but is not a yes/no exposure`);
+      if (!timing || timing.type !== 'number' || timing.kind !== 'exposure' || timing.unit !== 'days') issue(`fact ${key} timing ${f.timing} must be a number exposure fact in days`);
+    }
     for (const [id, q] of Object.entries(content.questions)) {
       if (q.factKey && !facts.has(q.factKey)) issue(`question ${id} references unknown fact ${q.factKey}`);
       q.options?.forEach((o) => o.factKey && !facts.has(o.factKey) && issue(`question ${id} option ${o.value} unknown fact`));

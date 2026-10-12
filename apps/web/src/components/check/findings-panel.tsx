@@ -4,6 +4,7 @@ import { AlertTriangle, BookOpen, FileSearch, History, Loader2, ShieldCheck, Spa
 import { Alert, Card, cn, Panel, StatusBadge, type Status } from "@nora/ui";
 import { formatDate } from "@/lib/care";
 import type { CheckResult, CheckView, UrgencyLevel } from "@/lib/checks";
+import { findingText, recordsShown } from "@/lib/findings";
 import { EmptyState } from "./intake-panel";
 
 export const URGENCY_STATUS: Record<UrgencyLevel, Status> = {
@@ -126,7 +127,7 @@ export function ResultView({
   const information = result.information ?? [];
   const exposures = result.findings.exposures ?? [];
   const ownWords = [...result.findings.present, ...exposures].filter((f) => f.said);
-  const usedRecords = result.memory?.filter((m) => m.used) ?? [];
+  const usedRecords = recordsShown(result);
   const missingSafety = result.triage?.missingSafety ?? [];
   return (
     <div className="flex flex-col gap-4">
@@ -344,12 +345,6 @@ function Citations({ ids }: { ids: string[] }) {
   );
 }
 
-function amount(value: number, unit: string | undefined): string {
-  if (!unit) return String(value);
-  if (unit === "days" && value === 0) return "less than a day";
-  return `${value} ${value === 1 ? unit.replace(/s$/, "") : unit}`;
-}
-
 function FactChips({ label, items, tone }: { label: string; items: CheckResult["findings"]["present"]; tone: "present" | "absent" | "unknown" }) {
   if (items.length === 0) return null;
   return (
@@ -366,8 +361,7 @@ function FactChips({ label, items, tone }: { label: string; items: CheckResult["
               tone === "unknown" && "border border-dashed border-line text-fg-muted",
             )}
           >
-            {f.label}
-            {f.value !== undefined && f.value !== null ? `: ${amount(f.value, f.unit)}` : ""}
+            {findingText(f)}
           </li>
         ))}
       </ul>

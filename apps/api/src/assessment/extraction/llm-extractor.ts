@@ -5,7 +5,7 @@ import type { BundleContent } from '../../clinical/bundle.schema.js';
 import { detectConcerns, type FactMap, UNCLEAR_SOURCE } from '../../clinical/rules-engine.js';
 import { EXTRACTION_SYSTEM } from '../graph/prompts.js';
 import type { AnswerConflict } from '../result.types.js';
-import { type Observation, saidAround, segmentOf, timeRole } from './rule-extractor.js';
+import { type Observation, saidAround, timeContext, timeRole, timingTargets } from './rule-extractor.js';
 
 export interface TokenUsage {
   inputTokens: number;
@@ -51,20 +51,20 @@ function numberGrounded(value: number, quote: string, unit: string | undefined):
   return written.some((n) => Math.abs(n - value) < 0.05 || (unit === '°C' && Math.abs(((n - 32) * 5) / 9 - value) < 0.2));
 }
 
-/** Number facts that are a timeline, and the kind of text their time must come from. */
-const TIMELINE_ROLE: Record<string, 'onset' | 'exposure'> = { duration_days: 'onset', exposure_days: 'exposure' };
-
 /**
- * A model may read "bitten 3 days ago" as how long symptoms have lasted. A
- * duration counts only when the words it came from are about the symptoms,
- * and an exposure time only when they are about the exposure.
+ * A model may read "bitten 3 days ago" as how long symptoms have lasted, or
+ * give one exposure's date to another. A duration counts only when the words
+ * it came from are about the symptoms; an exposure's timing only when they
+ * are about an exposure and tie the time to that exposure.
  */
 function timelineGrounded(bundle: BundleContent, message: string, factKey: string, quote: string): boolean {
-  const expected = TIMELINE_ROLE[factKey];
-  if (!expected) return true;
-  const seg = segmentOf(message, quote);
-  const role = timeRole(bundle, seg ?? quote);
-  return expected === 'onset' ? role !== 'exposure' && role !== 'history' : role === 'exposure';
+  const def = bundle.facts[factKey];
+  const exposureTiming = def?.kind === 'exposure' && def.type === 'number';
+  if (factKey !== 'duration_days' && !exposureTiming) return true;
+  const seg = timeContext(bundle, message, quote) ?? quote;
+  const role = timeRole(bundle, seg);
+  if (!exposureTiming) return role !== 'exposure' && role !== 'history';
+  return role === 'exposure' && timingTargets(bundle, message, seg).includes(factKey);
 }
 
 function locate(message: string, quote: string): string | undefined {

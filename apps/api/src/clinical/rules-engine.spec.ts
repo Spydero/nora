@@ -184,12 +184,13 @@ describe('question selection', () => {
     expect(plan.map((p) => p.id)).not.toContain('q_cough');
     expect(plan.every((p) => p.reason !== 'detail')).toBe(true);
     const withFever = { ...facts, fever: { state: 'PRESENT' as const } };
-    expect(planQuestions(demoBundle, withFever, detectConcerns(demoBundle, withFever), new Set(['q_ws_throat'])).map((p) => p.id)).toContain('q_temperature');
+    expect(evaluateUrgency(demoBundle, withFever, detectConcerns(demoBundle, withFever)).level).toBe('urgent');
+    expect(planQuestions(demoBundle, withFever, detectConcerns(demoBundle, withFever), new Set(['q_ws_throat'])).map((p) => p.id)).not.toContain('q_temperature');
   });
 
   it('asks conditional follow-ups only when their condition holds', () => {
-    const base: FactMap = { ...adult, sore_throat: { state: 'PRESENT' }, duration_days: { state: 'PRESENT', value: 2 }, cough: { state: 'ABSENT' }, swollen_glands: { state: 'ABSENT' }, difficulty_swallowing: { state: 'ABSENT' } };
-    const asked = new Set(['q_ws_throat']);
+    const base: FactMap = { ...adult, cough: { state: 'PRESENT' }, duration_days: { state: 'PRESENT', value: 2 }, breathless_severe: { state: 'ABSENT' }, breathless: { state: 'ABSENT' }, cough_blood: { state: 'ABSENT' } };
+    const asked = new Set(['q_ws_cough']);
     const plan = (facts: FactMap) => planQuestions(demoBundle, facts, detectConcerns(demoBundle, facts), asked).map((p) => p.id);
     expect(plan({ ...base, fever: { state: 'ABSENT' } })).not.toContain('q_temperature');
     expect(plan({ ...base, fever: { state: 'PRESENT' } })[0]).toBe('q_temperature');

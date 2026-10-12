@@ -48,6 +48,9 @@ const bullets = (lines: string[], empty: string) => (lines.length ? lines.map((l
 const finding = (f: FindingItem) => (f.value !== undefined && f.value !== null ? `${f.label}: ${quantity(f.value, f.unit)}` : f.label);
 /** A finding with the patient's own words, so severity and timing reach the doctor as they were said. */
 const reported = (f: FindingItem) => `${finding(f)}${f.said ? ` — patient’s words: “${f.said}”` : ''}${f.source === 'episode' ? ' (worked out from the earlier check)' : ''}`;
+/** An exposure with when that particular exposure happened. */
+const exposure = (f: FindingItem) =>
+  `${finding(f)}${f.daysAgo === undefined ? '' : ` — ${f.daysAgo < 1 ? 'today' : `${quantity(f.daysAgo, 'days')} ago`}`}${f.said ? ` — patient’s words: “${f.said}”` : ''}${f.whenSaid && f.whenSaid !== f.said ? ` (“${f.whenSaid}”)` : ''}`;
 
 function profileList(list: ProfileList | null | undefined, label: string): string {
   switch (list?.state) {
@@ -126,7 +129,7 @@ export function buildDoctorSummary(input: DoctorSummaryInput): DoctorSummary {
   sections.push(
     { id: 'symptoms', heading: 'Symptoms reported', text: bullets(r.findings.present.map(reported), 'None reported.') },
     ...(r.findings.exposures?.length
-      ? [{ id: 'exposures', heading: 'Exposures reported (not symptoms)', text: bullets(r.findings.exposures.map(reported), '') }]
+      ? [{ id: 'exposures', heading: 'Exposures reported (not symptoms)', text: bullets(r.findings.exposures.map(exposure), '') }]
       : []),
     { id: 'negatives', heading: 'Symptoms the patient does not have', text: bullets(r.findings.absent.map(finding), 'None recorded.') },
     {

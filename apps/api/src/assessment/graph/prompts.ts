@@ -1,4 +1,4 @@
-export const PROMPT_VERSION = 'assess-v5';
+export const PROMPT_VERSION = 'assess-v6';
 
 export const EXTRACTION_SYSTEM = `You extract structured symptom observations from a patient's message for Nora, a health-information and care-navigation tool.
 
@@ -11,7 +11,7 @@ Rules:
 - Events the patient was exposed to (marked [exposure]), such as an animal bite or unsafe food, are not symptoms.
 - Do not infer facts that are not stated. Do not diagnose.
 - For number facts give the value in the listed unit: convert weeks to days and Fahrenheit to Celsius.
-- duration_days is how long the symptoms have lasted. exposure_days is how long ago an exposure (a bite, a meal, a trip) happened. Never use the time of an exposure, or how long someone has had a long-term condition, as duration_days.`;
+- duration_days is how long the symptoms have lasted. Number facts marked [exposure] are how long ago one particular exposure happened: put each exposure's time in the fact named for that exposure, and only use a general exposure-time fact when the patient does not say which exposure the time belongs to. Never use the time of an exposure, or how long someone has had a long-term condition, as duration_days, and never give one exposure's time to another.`;
 
 export const RESEARCH_SYSTEM = `You are the evidence-gathering step of Nora, a health-information and care-navigation tool. Nora does not diagnose.
 

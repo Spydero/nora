@@ -1,5 +1,6 @@
 import type { AuthPrincipal } from '../auth/auth.types.js';
 import type { ConsentService } from '../consent/consent.service.js';
+import type { MemoryService } from '../memory/memory.service.js';
 import type { PrismaService } from '../prisma/prisma.service.js';
 import type { CaseStore } from './case-store.js';
 import { ChecksService } from './checks.service.js';
@@ -20,7 +21,7 @@ function service(opts: { consented?: boolean; enabled?: boolean } = {}) {
   } as unknown as PrismaService;
   const store = { tenantContext: async () => ({ assessmentEnabled: opts.enabled ?? true }) } as unknown as CaseStore;
   const consent = { hasGranted: async () => opts.consented ?? true } as unknown as ConsentService;
-  return { svc: new ChecksService(prisma, store, consent), writes };
+  return { svc: new ChecksService(prisma, store, consent, {} as MemoryService), writes };
 }
 
 const code = (p: Promise<unknown>) => p.then(() => 'ok', (e: { code?: string }) => e.code);

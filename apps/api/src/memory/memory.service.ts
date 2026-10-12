@@ -4,7 +4,7 @@ import { PrismaService } from '../prisma/prisma.service.js';
 import type { MemoryItem, MemoryKind } from './memory.types.js';
 
 const PAST_CHECK_DAYS = 90;
-const PAST_CHECK_LIMIT = 5;
+const PAST_CHECK_LIMIT = 10;
 const FINISHED = ['COMPLETED', 'INCOMPLETE', 'ESCALATED'] as const;
 
 const URGENCY_TEXT: Record<string, string> = {
@@ -29,29 +29,33 @@ type Draft = Omit<MemoryItem, 'id'>;
 export class MemoryService {
   constructor(private readonly prisma: PrismaService) {}
 
-  async forPatient(tenantId: string, userId: string, opts: { excludeSessionId?: string; now?: Date } = {}): Promise<MemoryItem[]> {
+  /** `includeCheckId` (the check being followed up) is always included, however old it is. */
+  async forPatient(tenantId: string, userId: string, opts: { excludeSessionId?: string; includeCheckId?: string | null; now?: Date } = {}): Promise<MemoryItem[]> {
     const now = opts.now ?? new Date();
-    const [profile, sessions, appointments] = await Promise.all([
+    const finished = { tenantId, patientUserId: userId, status: { in: [...FINISHED] }, currentResultId: { not: null } };
+    const select = { id: true, title: true, concernCode: true, createdAt: true, currentResultId: true } as const;
+    const [profile, recent, included, appointments] = await Promise.all([
       this.prisma.patientProfile.findUnique({ where: { tenantId_userId: { tenantId, userId } } }),
       this.prisma.assessmentSession.findMany({
         where: {
-          tenantId,
-          patientUserId: userId,
-          status: { in: [...FINISHED] },
-          currentResultId: { not: null },
+          ...finished,
           createdAt: { gte: new Date(now.getTime() - PAST_CHECK_DAYS * 86_400_000) },
           ...(opts.excludeSessionId ? { id: { not: opts.excludeSessionId } } : {}),
         },
         orderBy: { createdAt: 'desc' },
         take: PAST_CHECK_LIMIT,
-        select: { id: true, title: true, concernCode: true, createdAt: true, currentResultId: true },
+        select,
       }),
+      opts.includeCheckId && opts.includeCheckId !== opts.excludeSessionId
+        ? this.prisma.assessmentSession.findFirst({ where: { ...finished, id: opts.includeCheckId }, select })
+        : null,
       this.prisma.patientReportedAppointment.findMany({
         where: { tenantId, patientUserId: userId, scheduledAt: { gte: now }, status: 'PATIENT_REPORTED' },
         orderBy: { scheduledAt: 'asc' },
         take: 3,
       }),
     ]);
+    const sessions = included && !recent.some((s) => s.id === included.id) ? [...recent, included] : recent;
 
     const items: Draft[] = [];
     if (profile) {

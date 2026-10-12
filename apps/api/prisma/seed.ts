@@ -119,7 +119,8 @@ async function seedBundle(tenantId: string, authorId: string, approverId: string
         version: DEMO_BUNDLE_VERSION,
         status: 'RELEASED',
         content: demoBundle as object,
-        changeNote: 'Non-diagnostic: general information replaces ranked explanations; animal and snake bite pathway; exposure timelines; claim-level citations; no steam inhalation',
+        changeNote:
+          'Urgency re-checked against NHS pages: fever with flu-like symptoms in higher-risk groups, headache with vision problems, light sensitivity or a rash, hearing loss; per-exposure timelines; every rule names its passage or a clinician-review note; dengue page no longer cited for fever in general',
         authorId,
         approverId,
         approvedAt: new Date(),

@@ -14,7 +14,7 @@ export interface Draft {
 }
 
 /** Conditions and causes a draft must not attach to the patient's symptoms. */
-const CONDITION =
+export const CONDITION =
   '(infections?|virus(es)?|viral|bacteria|bacterial|strep|tonsillitis|pharyngitis|migraines?|tension[- ]type|appendicitis|cystitis|uti|kidney infection|pyelonephritis|pneumonia|bronchitis|meningitis|sciatica|gastroenteritis|stomach bug|food poisoning|indigestion|acidity|gastritis|dermatitis|eczema|allerg(y|ies|ic reaction)|hives|urticaria|otitis|ear infection|vertigo|bppv|labyrinthitis|flu|influenza|common cold|dengue|malaria|typhoid|covid|stroke|heart attack|sepsis|anaphylaxis|cancer|tumou?r|rabies)';
 
 const DIAGNOSIS = [
