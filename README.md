@@ -32,6 +32,10 @@
 | **Verify, retry, fall back** | Drafts with uncited claims, diagnosis or dosing language are rejected and retried, then replaced by approved template content. |
 | **Memory without guesswork** | Nora remembers only what the patient confirmed: profile conditions, medicines and allergies, past checks and upcoming appointments. Memory is built deterministically and given to the model as numbered facts; the verifier rejects any history claim that doesn't cite one. |
 | **Survives provider outages** | OpenRouter is primary and Google Gemini takes over automatically on rate limits, quota exhaustion or outages. If every provider fails, patients get approved template guidance and urgency is unaffected. |
+| **Warning signs outrank routine advice** | If a monitoring item's own "get help if…" condition is already true, urgency rises to that level. Any critical warning sign that no rule covers lifts urgency to at least "see a doctor soon". Self-care is removed at urgent and above; at "soon" it's shown only as comfort measures "until you're seen". |
+| **Answers are never silently changed** | Extraction can't overwrite a yes/no the patient gave. If a later message contradicts an answer, Nora keeps the answer and tells the patient. The one exception is a critical sign answered "no" and then described, which is treated as present to be safe. |
+| **Contradictions are caught before display** | The verifier rejects AI summaries that deny something the patient said, assert something they denied, misquote numbers, or use reassuring or "settles on its own" wording when a doctor is needed. Approved explanations that say a condition usually settles get a warning-sign caution at "soon" and above. |
+| **Unverified never means reassuring** | If an AI draft fails verification, the template fallback can't stay at self-care. Urgency floors at "routine" and the check is queued for clinician review. |
 | **Defence in depth** | A deterministic red-flag extractor always runs beside the LLM extractor; a critical finding it sees can never be dropped by the model. |
 | **Tenant isolation & privacy** | Tenant-scoped data access, append-only consent, audit trails, idle timeouts, rotating refresh tokens and CSRF protection. |
 
@@ -67,6 +71,11 @@
   <tr>
     <td><img src="docs/screenshots/34-findings-medical-terms.png" alt="Possible explanations switched to medical terms" /></td>
     <td><img src="docs/screenshots/37-platform-health.png" alt="Platform health with OpenRouter primary and Gemini fallback status" /></td>
+    <td><img src="docs/screenshots/40-answer-conflict.png" alt="Patient answered no to stiff neck then mentioned it; Nora treated it as present and escalated" /></td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/38-warning-sign-caution.png" alt="Stiff neck raises a sore throat to see a doctor soon, with a caution on the viral explanation" /></td>
+    <td><img src="docs/screenshots/39-until-youre-seen.png" alt="Care plan with one booking step and self-care shown only as comfort until you're seen" /></td>
     <td></td>
   </tr>
 </table>

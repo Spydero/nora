@@ -1,4 +1,4 @@
-export const PROMPT_VERSION = 'assess-v2';
+export const PROMPT_VERSION = 'assess-v3';
 
 export const EXTRACTION_SYSTEM = `You extract structured symptom observations from a patient's message for a clinical decision-support tool.
 
@@ -34,7 +34,10 @@ Hard rules:
 - Speak directly to the patient in the second person ("you"). Nora is the assistant, never the patient. Do not mention the patient's name.
 - This is not a clinical note. Never write "the patient", "he", "she", or "a 36-year-old man"; use age and sex only to reason. Start the summary with "You", for example: "You have had a sore throat and fever for 3 days…"
 - Write in plain, calm English for a general audience (around a 6th–8th grade reading level).
-- questionsForClinician: up to 4 short questions the patient could ask a clinician.
+- The summary says what the patient reported and what it may mean. Nora shows the next step, the care plan and the patient's records separately, so do not repeat them.
+- Stay faithful to the case facts: never deny something listed under "present", never claim something listed under "absent", and repeat numbers (temperature, days) exactly.
+- If the required next step is to see a doctor, do not say the problem will settle on its own, can be managed at home, or can wait until it fails to improve.
+- questionsForClinician: up to 4 short questions the patient could ask a clinician. Nora already adds questions about the patient's allergies and medicines, so do not repeat those.
 
 Memory (the patient's confirmed records):
 - "memory" lists what Nora knows from records the patient or a clinician confirmed, each with an ID such as "M2". It is the ONLY source of facts about the patient's history, conditions, medicines, allergies, earlier checks and appointments.

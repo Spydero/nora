@@ -1,4 +1,5 @@
 import { type UrgencyLevel, urgencyRank } from '../../clinical/bundle.schema.js';
+import { type AnswerFacts, answerIssues, urgencyIssues } from './consistency.js';
 
 export interface Draft {
   summary: string;
@@ -56,6 +57,8 @@ export interface VerifyContext {
   groundText?: string;
   /** Medicine and condition names that must not appear unless the ground text contains them. */
   watchTerms?: readonly string[];
+  /** The patient's own answers; the draft must not contradict them. */
+  answers?: AnswerFacts;
 }
 
 const wordRe = (term: string) => new RegExp(`\\b${term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`, 'i');
@@ -100,10 +103,13 @@ export function verifyDraft(draft: Draft, ctx: VerifyContext): string[] {
       issues.push(`Text contradicts the required urgency: "${t.slice(0, 80)}"`);
     }
   }
-  for (const t of [draft.summary, ...draft.explanations.map((e) => e.rationale)]) {
+  const statements = [draft.summary, ...draft.explanations.map((e) => e.rationale)];
+  for (const t of statements) {
     if (MEDICINE_INSTRUCTION.test(t)) issues.push(`Medicine dosing or instructions are not allowed: "${t.slice(0, 80)}"`);
     if (THIRD_PERSON.some((re) => re.test(t))) issues.push(`Address the patient directly as "you": "${t.slice(0, 80)}"`);
   }
+  issues.push(...urgencyIssues(statements, ctx.urgency));
+  if (ctx.answers) issues.push(...answerIssues(statements, ctx.answers));
   issues.push(...groundingIssues(draft, texts, ctx));
   return issues;
 }

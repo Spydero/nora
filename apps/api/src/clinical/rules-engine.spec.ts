@@ -75,6 +75,33 @@ describe('urgency', () => {
     expect(outcome.triggered.map((t) => t.ruleId)).not.toContain('r_sore_throat_long');
   });
 
+  it('treats a "get help if…" warning that has already happened as a reason to escalate', () => {
+    const facts: FactMap = { ...adult, headache: { state: 'PRESENT' }, stiff_neck: { state: 'PRESENT' }, fever: { state: 'ABSENT' } };
+    const outcome = evaluateUrgency(demoBundle, facts, detectConcerns(demoBundle, facts));
+    expect(outcome.level).toBe('emergency');
+    expect(outcome.triggered[0]).toMatchObject({ ruleId: 'warn:ci_headache_monitor', level: 'emergency' });
+    expect(outcome.triggered[0]!.message).toContain('stiff neck');
+    expect(outcome.triggered.map((t) => t.ruleId)).not.toContain('warning_sign:stiff_neck');
+  });
+
+  it('never leaves a warning sign below "see a doctor soon", even when no rule covers it', () => {
+    const facts: FactMap = { ...adult, sore_throat: { state: 'PRESENT' }, stiff_neck: { state: 'PRESENT' }, fever: { state: 'ABSENT' } };
+    const outcome = evaluateUrgency(demoBundle, facts, detectConcerns(demoBundle, facts));
+    expect(outcome.level).toBe('soon');
+    expect(outcome.triggered.map((t) => t.ruleId)).toEqual(['warning_sign:stiff_neck']);
+  });
+
+  it('every critical yes/no fact raises urgency above self-care with any concern', () => {
+    const critical = Object.entries(demoBundle.facts).filter(([, f]) => f.critical && f.type === 'boolean').map(([k]) => k);
+    for (const concern of demoBundle.concerns) {
+      for (const key of critical) {
+        const facts: FactMap = { ...adult, [concern.triggers[0]!]: { state: 'PRESENT' }, [key]: { state: 'PRESENT' } };
+        const level = evaluateUrgency(demoBundle, facts, [concern]).level;
+        expect([concern.code, key, level]).not.toEqual([concern.code, key, expect.stringMatching(/^(self_care|routine)$/)]);
+      }
+    }
+  });
+
   it('a skipped red-flag answer never lowers urgency below the concern default', () => {
     const facts: FactMap = { ...adult, dysuria: { state: 'PRESENT' }, flank_pain: { state: 'UNKNOWN' } };
     expect(evaluateUrgency(demoBundle, facts, detectConcerns(demoBundle, facts)).level).toBe('soon');

@@ -88,7 +88,9 @@ export function IntakePanel({
                         ? "bg-danger-bg text-danger"
                         : m.kind === "review"
                           ? "border border-info/30 bg-info-bg"
-                          : "bg-subtle",
+                          : m.kind === "notice"
+                            ? "border border-warning/30 bg-warning-bg"
+                            : "bg-subtle",
                   )}
                 >
                   {m.kind === "review" && (

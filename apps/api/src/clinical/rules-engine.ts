@@ -78,13 +78,69 @@ export function detectConcerns(bundle: BundleContent, facts: FactMap): ConcernDe
   return specific.length ? specific : matched.slice(0, 1);
 }
 
+/** Facts a condition refers to. */
+export function conditionFacts(condition: Condition): string[] {
+  if ('all' in condition) return condition.all.flatMap(conditionFacts);
+  if ('any' in condition) return condition.any.flatMap(conditionFacts);
+  if ('not' in condition) return conditionFacts(condition.not);
+  return [condition.fact];
+}
+
+/** Level a "get help if…" item calls for when one of its conditions already holds; null when none does. */
+export function warningLevel(bundle: BundleContent, careItemId: string, facts: FactMap): UrgencyLevel | null {
+  const hits = (bundle.careItems[careItemId]?.escalate ?? []).filter((e) => evaluate(e.when, facts));
+  return hits.length ? hits.reduce<UrgencyLevel>((acc, e) => maxUrgency(acc, e.level), 'self_care') : null;
+}
+
+/** The minimum level for a warning sign that no rule accounts for. */
+export const WARNING_SIGN_FLOOR: UrgencyLevel = 'soon';
+
+function describe(bundle: BundleContent, keys: string[], facts: FactMap): string {
+  return keys
+    .map((k) => {
+      const def = bundle.facts[k]!;
+      const f = facts[k]!;
+      return def.type === 'number' ? `${def.label.toLowerCase()}: ${f.value}${def.unit ? ` ${def.unit}` : ''}` : def.label.toLowerCase();
+    })
+    .join('; ');
+}
+
+/**
+ * Bundle rules decide urgency, then two guards make sure a high-risk finding
+ * is never outweighed by a routine or self-care default:
+ * - a "get help if…" warning for this concern that has already happened
+ *   raises urgency to the level that warning calls for;
+ * - a critical fact no triggered rule accounts for raises urgency to at
+ *   least WARNING_SIGN_FLOOR.
+ */
 export function evaluateUrgency(bundle: BundleContent, facts: FactMap, concerns: ConcernDef[]): UrgencyOutcome {
   const codes = new Set(concerns.map((c) => c.code));
-  const triggered: TriggeredRule[] = bundle.urgencyRules
-    .filter((r) => !r.concerns || r.concerns.some((c) => codes.has(c)))
-    .filter((r) => evaluate(r.when, facts))
-    .map((r) => ({ ruleId: r.id, level: r.level, message: r.message, sourceKey: r.sourceKey, careItems: r.careItems }))
-    .sort((a, b) => urgencyRank(b.level) - urgencyRank(a.level));
+  const fired = bundle.urgencyRules.filter((r) => (!r.concerns || r.concerns.some((c) => codes.has(c))) && evaluate(r.when, facts));
+  const triggered: TriggeredRule[] = fired.map((r) => ({ ruleId: r.id, level: r.level, message: r.message, sourceKey: r.sourceKey, careItems: r.careItems }));
+  const covered = new Set(fired.flatMap((r) => conditionFacts(r.when)));
+  const present = (k: string) => facts[k]?.state === 'PRESENT';
+
+  const watchItems = [...new Set([...concerns.flatMap((c) => c.careItems), ...fired.flatMap((r) => r.careItems)])];
+  for (const id of watchItems) {
+    const item = bundle.careItems[id]!;
+    const level = warningLevel(bundle, id, facts);
+    if (!level) continue;
+    const met = [...new Set(item.escalate.filter((e) => evaluate(e.when, facts)).flatMap((e) => conditionFacts(e.when)))].filter(present);
+    met.forEach((k) => covered.add(k));
+    triggered.push({ ruleId: `warn:${id}`, level, message: `You told Nora about: ${describe(bundle, met, facts)}. ${item.text}`, sourceKey: item.sourceKey, careItems: [] });
+  }
+
+  for (const [key, def] of Object.entries(bundle.facts)) {
+    if (!def.critical || def.type !== 'boolean' || !present(key) || covered.has(key)) continue;
+    triggered.push({
+      ruleId: `warning_sign:${key}`,
+      level: WARNING_SIGN_FLOOR,
+      message: `${def.label} is a warning sign, so a doctor should check it.`,
+      sourceKey: 'src_red_flags',
+      careItems: [],
+    });
+  }
+  triggered.sort((a, b) => urgencyRank(b.level) - urgencyRank(a.level));
 
   const defaultLevel = concerns.reduce<UrgencyLevel>((acc, c) => maxUrgency(acc, c.defaultLevel), 'self_care');
   const level = triggered.reduce<UrgencyLevel>((acc, t) => maxUrgency(acc, t.level), defaultLevel);

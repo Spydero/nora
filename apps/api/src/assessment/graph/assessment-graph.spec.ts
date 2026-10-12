@@ -123,7 +123,9 @@ describe('assessment graph orchestration', () => {
     expect(decisions.calls).toHaveLength(0);
     expect(out.result!.status).toBe('ESCALATED');
     expect(out.result!.carePlan[0]!.id).toBe('ci_call_112');
-    expect(out.result!.summary).toContain('112');
+    expect(out.result!.summary).toContain('chest pain or pressure');
+    expect(out.result!.summary).not.toContain(out.result!.urgency.reasons[0]!.message);
+    expect(out.result!.limitations).toEqual([]);
     expect(out.result!.evidence.length).toBeGreaterThan(0);
   });
 
@@ -298,6 +300,77 @@ describe('assessment graph orchestration', () => {
       expect(out.result!.generator).toBe('template_fallback');
       expect(out.result!.verification.issues.join(' ')).toMatch(/without citing a memory item|"metformin"/);
       expect(out.result!.summary).not.toMatch(/metformin|diabetes/);
+    });
+  });
+
+  describe('safety over AI conclusions', () => {
+    const viralCase: FactMap = { ...noRedFlags, sore_throat: P(), runny_nose: P(), cough: P(), fever: A, duration_days: P(2), difficulty_swallowing: A, swollen_glands: A };
+    const unsafe = { ...goodDraft, summary: 'You have strep throat. Take 500 mg amoxicillin twice a day.' };
+
+    it('does not fall back to self-care when the AI explanation fails verification', async () => {
+      const { deps } = setup({ chat: [new AIMessage('ok')], drafts: [unsafe, unsafe], decisions: [ranking] });
+      const out = await runAssessment(deps, input(viralCase, { turnCount: demoBundle.meta.maxTurns }));
+      const r = out.result!;
+      expect(r.generator).toBe('template_fallback');
+      expect(r.urgency.level).toBe('routine');
+      expect(r.urgency.reasons.map((x) => x.ruleId)).toContain('unverified_explanation');
+      expect(r.handoff.recommended).toBe(true);
+      expect(out.urgency!.level).toBe('routine');
+      expect(out.reviewReasons).toContain('ai_draft_failed_verification');
+    });
+
+    it('keeps self-care when the AI is simply unavailable, and fails over on drafting errors', async () => {
+      const { deps } = setup({ chat: [new AIMessage('ok')], drafts: [new Error('503 overloaded'), new Error('503 overloaded')], decisions: [ranking] });
+      const out = await runAssessment(deps, input(viralCase, { turnCount: demoBundle.meta.maxTurns }));
+      expect(out.result!.generator).toBe('template_fallback');
+      expect(out.result!.urgency.level).toBe('self_care');
+      expect(out.aiErrors.join(' ')).toMatch(/draft: 503/);
+      expect(out.reviewReasons).not.toContain('ai_draft_failed_verification');
+    });
+
+    it('rejects a draft that contradicts the patient’s answers or plays down warning signs', async () => {
+      const contradicting = {
+        ...goodDraft,
+        summary: 'You have a sore throat with no fever, which usually settles on its own. Your temperature was 37.2 °C.',
+      };
+      const { chat, deps } = setup({ chat: [new AIMessage('ok')], drafts: [contradicting, goodDraft], decisions: [ranking] });
+      const out = await runAssessment(deps, input(strepCase));
+      expect(out.result!.generator).toBe('llm');
+      const feedback = JSON.stringify(chat.structuredCalls[1]!.input);
+      expect(feedback).toContain('you said you do');
+      expect(feedback).toContain('Suggests less care');
+      expect(feedback).toContain('37.2');
+    });
+
+    it('offers home care only as comfort until the patient is seen, and qualifies reassuring explanations', async () => {
+      const r = (await runAssessment(setup({ ai: false }).deps, input(strepCase))).result!;
+      expect(r.urgency.level).toBe('soon');
+      const selfCare = r.carePlan.filter((i) => i.kind === 'self_care');
+      expect(selfCare.length).toBeGreaterThan(0);
+      for (const i of selfCare) expect(i.whileWaiting).toBe(true);
+      expect(r.explanations.find((e) => e.code === 'viral_pharyngitis')!.caution).toMatch(/warning signs/);
+      expect(r.summary).not.toMatch(/next step|not a diagnosis/i);
+    });
+
+    it('drops home care once the patient needs a doctor today', async () => {
+      const r = (await runAssessment(setup({ ai: false }).deps, input({ ...strepCase, temperature_c: P(39.8) }))).result!;
+      expect(r.urgency.level).toBe('urgent');
+      expect(r.carePlan.some((i) => i.kind === 'self_care')).toBe(false);
+    });
+
+    it('keeps a confirmed answer when a later message disagrees, and says so', async () => {
+      const out = await runAssessment(setup({ ai: false }).deps, input({ ...strepCase, cough: A }, { message: 'I have a cough as well' }));
+      expect(out.facts.cough).toMatchObject({ state: 'ABSENT', source: 'answer' });
+      expect(out.conflicts).toEqual([{ key: 'cough', label: 'Cough', answered: 'no', mentioned: 'yes', resolution: 'kept_answer' }]);
+      expect(out.result!.answerConflicts).toEqual(out.conflicts);
+    });
+
+    it('treats a warning sign mentioned after a "no" as present, and reports it', async () => {
+      const out = await runAssessment(setup({ ai: false }).deps, input({ ...viralCase, stiff_neck: A }, { message: 'now I have a stiff neck too' }));
+      expect(out.facts.stiff_neck).toMatchObject({ state: 'PRESENT' });
+      expect(out.conflicts[0]).toMatchObject({ key: 'stiff_neck', resolution: 'treated_as_present' });
+      expect(out.urgency!.triggered.map((t) => t.ruleId)).toContain('warning_sign:stiff_neck');
+      expect(out.urgency!.level).toBe('soon');
     });
   });
 

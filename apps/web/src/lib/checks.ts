@@ -38,6 +38,16 @@ export interface EvidenceRef {
   url: string | null;
 }
 
+export interface CarePlanItem {
+  id: string;
+  kind: string;
+  text: string;
+  timeframe?: string;
+  citations: string[];
+  watch?: boolean;
+  whileWaiting?: boolean;
+}
+
 export interface CheckResult {
   status: "COMPLETED" | "INCOMPLETE" | "ESCALATED" | "UNSUPPORTED";
   urgency: { level: UrgencyLevel; title: string; text: string; reasons: { ruleId: string; message: string; citations: string[] }[] };
@@ -52,8 +62,11 @@ export interface CheckResult {
     likelihood: "more_likely" | "possible" | "less_likely";
     rationale: string;
     citations: string[];
+    caution?: string;
   }[];
-  carePlan: { id: string; kind: string; text: string; timeframe?: string; citations: string[] }[];
+  /** `watch` and `whileWaiting` are missing on results saved before they existed. */
+  carePlan: CarePlanItem[];
+  answerConflicts?: { key: string; label: string; answered: "yes" | "no"; mentioned: "yes" | "no"; resolution: "kept_answer" | "treated_as_present" }[];
   questionsForClinician: string[];
   missingInformation: { key: string; label: string }[];
   limitations: string[];
@@ -82,7 +95,7 @@ export interface MemoryItem {
 export interface CheckMessage {
   id: string;
   sender: "patient" | "nora";
-  kind: "text" | "answer" | "question" | "result" | "error" | "review";
+  kind: "text" | "answer" | "question" | "result" | "error" | "review" | "notice";
   text: string;
   questionId: string | null;
   createdAt: string;

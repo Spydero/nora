@@ -4,6 +4,7 @@ import { ConfigService } from '@nestjs/config';
 import { type AiProvider, AiService, isProviderFailure, type ProviderName } from '../ai/ai.service.js';
 import { runAssessment } from '../assessment/graph/assessment-graph.js';
 import { PROMPT_VERSION } from '../assessment/graph/prompts.js';
+import type { AnswerConflict } from '../assessment/result.types.js';
 import type { FactMap } from '../clinical/rules-engine.js';
 import type { Env } from '../config/env.js';
 import { Prisma } from '../generated/prisma/client.js';
@@ -106,7 +107,7 @@ export class AssessmentWorker implements OnModuleInit, OnModuleDestroy {
     const session = await this.prisma.assessmentSession.findUnique({ where: { id: job.resource_id } });
     if (!session || session.inputVersion !== inputVersion) return;
 
-    const [bundle, tenantCtx, facts, asked, message, memory, watchTerms] = await Promise.all([
+    const [bundle, tenantCtx, facts, asked, message, memory, watchTerms, conflictEvents] = await Promise.all([
       this.store.bundle(session.bundleId),
       this.store.tenantContext(session.tenantId),
       this.store.facts(this.prisma, session.id),
@@ -114,7 +115,9 @@ export class AssessmentWorker implements OnModuleInit, OnModuleDestroy {
       job.payload.messageId ? this.prisma.message.findUnique({ where: { id: job.payload.messageId } }) : null,
       this.memory.forPatient(session.tenantId, session.patientUserId, { excludeSessionId: session.id }),
       this.watchTerms(session.tenantId),
+      this.prisma.sessionEvent.findMany({ where: { sessionId: session.id, type: 'answer_conflict' }, orderBy: { sequence: 'asc' } }),
     ]);
+    const priorConflicts = conflictEvents.map((e) => e.payload as unknown as AnswerConflict);
     const aiPaused = tenantCtx.aiEnabled && this.ai.configured() && !this.ai.available();
     let provider = tenantCtx.aiEnabled && !templateOnly ? this.ai.next() : null;
     const tried: ProviderName[] = [];
@@ -143,6 +146,7 @@ export class AssessmentWorker implements OnModuleInit, OnModuleDestroy {
             memory,
             emergency: tenantCtx.emergency,
             parentCheckId: session.parentSessionId,
+            conflicts: priorConflicts,
           },
           facts,
           asked,
@@ -178,6 +182,10 @@ export class AssessmentWorker implements OnModuleInit, OnModuleDestroy {
       if (current.count !== 1) return;
 
       await this.store.writeFacts(tx, session.id, changes, inputVersion, provenance);
+      for (const c of out.conflicts) {
+        await this.store.event(tx, session.id, 'answer_conflict', c as unknown as Record<string, unknown>);
+        await tx.message.create({ data: { sessionId: session.id, sender: 'nora', kind: 'notice', text: conflictNotice(c), inputVersion } });
+      }
       const urgency = out.urgency!;
       await tx.urgencyDecision.create({
         data: { sessionId: session.id, inputVersion, level: urgency.level, ruleIds: urgency.triggered.map((t) => t.ruleId), bundleId: session.bundleId },
@@ -278,6 +286,14 @@ export class AssessmentWorker implements OnModuleInit, OnModuleDestroy {
 }
 
 const CONDITION_TERMS = ['diabetes', 'hypertension', 'high blood pressure', 'asthma', 'COPD', 'thyroid', 'hypothyroidism', 'kidney disease', 'heart disease', 'epilepsy', 'cancer', 'HIV', 'tuberculosis'];
+
+export function conflictNotice(c: AnswerConflict): string {
+  const answered = c.answered === 'yes' ? 'Yes' : 'No';
+  const mentioned = c.mentioned === 'yes' ? 'mentions it' : 'suggests you don’t have it';
+  return c.resolution === 'treated_as_present'
+    ? `Earlier you answered “${answered}” to “${c.label}”, but your message ${mentioned}. Because it can be a warning sign, Nora is treating it as present to be safe.`
+    : `Earlier you answered “${answered}” to “${c.label}”, but your message ${mentioned}. Nora has kept your answer. If it has changed, tell your doctor.`;
+}
 
 function hashFacts(facts: FactMap): string {
   const sorted = Object.keys(facts)

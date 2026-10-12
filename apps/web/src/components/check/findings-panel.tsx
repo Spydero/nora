@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { FileSearch, History, Loader2, Stethoscope } from "lucide-react";
+import { AlertTriangle, FileSearch, History, Loader2, Stethoscope } from "lucide-react";
 import { Alert, Card, cn, Panel, StatusBadge, type Status } from "@nora/ui";
 import type { CheckResult, CheckView, UrgencyLevel } from "@/lib/checks";
 import { EmptyState } from "./intake-panel";
@@ -23,7 +23,7 @@ const LIKELIHOOD: Record<CheckResult["explanations"][number]["likelihood"], { la
 const GENERATOR: Record<CheckResult["generator"], string> = {
   llm: "Explanations written by AI from approved sources, then checked by Nora’s safety rules.",
   template: "Nora’s standard approved guidance.",
-  template_fallback: "Nora’s standard approved guidance (the AI explanation was unavailable or did not pass safety checks).",
+  template_fallback: "Nora’s standard approved guidance. The AI explanation was unavailable or didn’t pass Nora’s safety checks, so it isn’t shown.",
   rules: "Safety rules decided this result; no AI was used.",
 };
 
@@ -179,6 +179,12 @@ export function ResultView({
               <p className="text-secondary">
                 {e.rationale.replace(/\s*\(?\bE\d+\b(,\s*E\d+)*\)?/g, "")} <Citations ids={e.citations} />
               </p>
+              {e.caution && (
+                <p className="flex items-start gap-1.5 text-secondary font-medium text-warning">
+                  <AlertTriangle aria-hidden className="mt-0.5 size-4 shrink-0" />
+                  {e.caution}
+                </p>
+              )}
             </Card>
           ))}
         </section>
@@ -191,6 +197,15 @@ export function ResultView({
         <FactChips label="You have" items={result.findings.present} tone="present" />
         <FactChips label="You don’t have" items={result.findings.absent} tone="absent" />
         <FactChips label="Not answered" items={result.findings.unknown} tone="unknown" />
+        {result.answerConflicts?.map((c) => (
+          <p key={c.key} className="flex items-start gap-2 rounded-card bg-warning-bg px-3 py-2 text-secondary">
+            <AlertTriangle aria-hidden className="mt-0.5 size-4 shrink-0 text-warning" />
+            <span>
+              You answered “{c.answered === "yes" ? "Yes" : "No"}” to {c.label.toLowerCase()}, but a later message {c.mentioned === "yes" ? "mentioned it" : "suggested you don’t have it"}.{" "}
+              {c.resolution === "treated_as_present" ? "Because it can be a warning sign, Nora treated it as present to be safe." : "Nora kept your answer."}
+            </span>
+          </p>
+        ))}
       </section>
 
       {usedRecords.length > 0 && (

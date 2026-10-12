@@ -21,6 +21,15 @@ export interface FindingItem {
   source: string;
 }
 
+export interface AnswerConflict {
+  key: string;
+  label: string;
+  answered: 'yes' | 'no';
+  mentioned: 'yes' | 'no';
+  /** A confirmed answer is kept, except that a warning sign mentioned later is treated as present to be safe. */
+  resolution: 'kept_answer' | 'treated_as_present';
+}
+
 export type ResultStatus = 'COMPLETED' | 'INCOMPLETE' | 'ESCALATED' | 'UNSUPPORTED';
 export type Generator = 'llm' | 'template' | 'template_fallback' | 'rules';
 
@@ -44,8 +53,22 @@ export interface ResultContent {
     likelihood: 'more_likely' | 'possible' | 'less_likely';
     rationale: string;
     citations: string[];
+    /** Shown when the approved description sounds reassuring but the urgency rules found warning signs. */
+    caution?: string;
   }[];
-  carePlan: { id: string; kind: string; text: string; timeframe?: string; citations: string[] }[];
+  /** Later messages that disagreed with an earlier yes/no answer, and what Nora did about it. */
+  answerConflicts?: AnswerConflict[];
+  carePlan: {
+    id: string;
+    kind: string;
+    text: string;
+    timeframe?: string;
+    citations: string[];
+    /** A "get help if…" warning to watch for, not a task. */
+    watch?: boolean;
+    /** Comfort only until the patient is seen; never a substitute for the recommended care. */
+    whileWaiting?: boolean;
+  }[];
   questionsForClinician: string[];
   missingInformation: { key: string; label: string }[];
   limitations: string[];

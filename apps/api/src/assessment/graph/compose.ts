@@ -1,7 +1,8 @@
-import type { BundleContent, ConcernDef, UrgencyLevel } from '../../clinical/bundle.schema.js';
-import type { FactMap, TriggeredRule, UrgencyOutcome } from '../../clinical/rules-engine.js';
+import { type BundleContent, type ConcernDef, type UrgencyLevel, maxUrgency, urgencyRank } from '../../clinical/bundle.schema.js';
+import { type FactMap, type TriggeredRule, type UrgencyOutcome, warningLevel } from '../../clinical/rules-engine.js';
 import { type MemoryItem, memoryLine } from '../../memory/memory.types.js';
-import type { FindingItem, Generator, ResultContent, ResultStatus } from '../result.types.js';
+import type { AnswerConflict, FindingItem, Generator, ResultContent, ResultStatus } from '../result.types.js';
+import { SELF_RESOLVING } from './consistency.js';
 import type { EvidenceRegistry } from './evidence-registry.js';
 import type { Draft } from './verify.js';
 
@@ -74,15 +75,46 @@ function cite(registry: EvidenceRegistry, sourceKeys: string[]): string[] {
   return [...new Set(sourceKeys.map((k) => registry.firstForSource(k)).filter((c): c is string => !!c))];
 }
 
-export function carePlan(bundle: BundleContent, level: UrgencyLevel, triggered: TriggeredRule[], concerns: ConcernDef[], registry: EvidenceRegistry): ResultContent['carePlan'] {
+/**
+ * The plan never pairs a warning with home care as if it were enough:
+ * - from "see a doctor today" upwards, home care is left out;
+ * - at "within 24–48 hours" it is only offered as comfort until the patient is seen;
+ * - a "get help if…" warning that has already happened is a reason in the
+ *   urgency, not something to watch for, and one that asks for no more than
+ *   the current level adds nothing.
+ */
+export function carePlan(
+  bundle: BundleContent,
+  level: UrgencyLevel,
+  triggered: TriggeredRule[],
+  concerns: ConcernDef[],
+  registry: EvidenceRegistry,
+  facts: FactMap,
+): ResultContent['carePlan'] {
   const ids = [
     ...bundle.urgencyActions[level].careItems,
     ...triggered.flatMap((t) => t.careItems),
     ...(level === 'emergency' ? [] : concerns.flatMap((c) => c.careItems)),
   ];
-  return [...new Set(ids)].map((id) => {
+  return [...new Set(ids)].flatMap((id) => {
     const item = bundle.careItems[id]!;
-    return { id, kind: item.kind, text: item.text, timeframe: item.timeframe, citations: cite(registry, [item.sourceKey]) };
+    if (item.kind === 'self_care' && urgencyRank(level) >= urgencyRank('urgent')) return [];
+    const watch = item.escalate.length > 0;
+    if (watch) {
+      const highest = item.escalate.reduce<UrgencyLevel>((acc, e) => maxUrgency(acc, e.level), 'self_care');
+      if (warningLevel(bundle, id, facts) || urgencyRank(highest) <= urgencyRank(level)) return [];
+    }
+    return [
+      {
+        id,
+        kind: item.kind,
+        text: item.text,
+        timeframe: item.timeframe,
+        citations: cite(registry, [item.sourceKey]),
+        watch,
+        ...(item.kind === 'self_care' && level === 'soon' ? { whileWaiting: true } : {}),
+      },
+    ];
   });
 }
 
@@ -91,7 +123,6 @@ export function templateDraft(
   bundle: BundleContent,
   facts: FactMap,
   concerns: ConcernDef[],
-  level: UrgencyLevel,
   registry: EvidenceRegistry,
   ranking?: Record<string, number>,
   memory: MemoryItem[] = [],
@@ -121,7 +152,7 @@ export function templateDraft(
   const duration = days === null ? '' : days < 1 ? ' since today' : ` for about ${days} ${days === 1 ? 'day' : 'days'}`;
 
   return {
-    summary: `You described ${symptoms.length ? listText(symptoms) : 'your symptoms'}${duration}. Based on your answers and Nora's clinical rules, the recommended next step is: ${bundle.urgencyActions[level].title.toLowerCase()}. The possible explanations below are not a diagnosis — a clinician can confirm what is going on.`,
+    summary: `You described ${symptoms.length ? listText(symptoms) : 'your symptoms'}${duration}.`,
     explanations: scored.map(({ e, support, against, score }, i) => ({
       code: e.code,
       likelihood: likelihood(score, i),
@@ -153,11 +184,15 @@ interface BuildArgs {
   emergency: EmergencyContacts;
   verification: ResultContent['verification'];
   memory: MemoryItem[];
+  answerConflicts?: AnswerConflict[];
 }
+
+const WARNING_CAUTION = 'Your answers include warning signs, so don’t wait for this to settle on its own. Follow the advice above.';
 
 export function buildResult(a: BuildArgs): ResultContent {
   const action = a.bundle.urgencyActions[a.urgency.level];
   const byCode = new Map(a.concerns.flatMap((c) => c.explanations).map((e) => [e.code, e]));
+  const warned = urgencyRank(a.urgency.level) >= urgencyRank('soon');
   const handoffFrames: Record<UrgencyLevel, string> = { emergency: 'Now', urgent: 'Today', soon: 'Within 24–48 hours', routine: 'Within 1–2 weeks if not improving', self_care: 'If symptoms continue or worsen' };
   return {
     schemaVersion: '1',
@@ -173,9 +208,11 @@ export function buildResult(a: BuildArgs): ResultContent {
     findings: findings(a.bundle, a.facts),
     explanations: a.draft.explanations.flatMap((d) => {
       const e = byCode.get(d.code);
-      return e ? [{ code: e.code, label: e.label, plain: e.plain, clinical: e.clinical, likelihood: d.likelihood, rationale: d.rationale, citations: d.citations }] : [];
+      if (!e) return [];
+      const caution = warned && SELF_RESOLVING.some((re) => re.test(e.plain)) ? { caution: WARNING_CAUTION } : {};
+      return [{ code: e.code, label: e.label, plain: e.plain, clinical: e.clinical, likelihood: d.likelihood, rationale: d.rationale, citations: d.citations, ...caution }];
     }),
-    carePlan: carePlan(a.bundle, a.urgency.level, a.urgency.triggered, a.concerns, a.registry),
+    carePlan: carePlan(a.bundle, a.urgency.level, a.urgency.triggered, a.concerns, a.registry, a.facts),
     questionsForClinician: a.draft.questionsForClinician,
     missingInformation: a.missing.map((key) => ({ key, label: a.bundle.facts[key]?.label ?? key })),
     limitations: a.limitations,
@@ -191,6 +228,7 @@ export function buildResult(a: BuildArgs): ResultContent {
     model: a.model,
     verification: a.verification,
     memory: a.memory.map(({ id, kind, label, text, href, checkId }) => ({ id, kind, label, text, href, ...(checkId ? { checkId } : {}), used: a.draft.memoryRefs.includes(id) })),
+    ...(a.answerConflicts?.length ? { answerConflicts: a.answerConflicts } : {}),
   };
 }
 
@@ -202,8 +240,9 @@ export function escalationResult(
   registry: EvidenceRegistry,
   emergency: EmergencyContacts,
   memory: MemoryItem[] = [],
+  answerConflicts: AnswerConflict[] = [],
 ): ResultContent {
-  const reasons = urgency.triggered.filter((t) => t.level === 'emergency').map((t) => t.message);
+  const told = findings(bundle, facts).present.filter((f) => bundle.facts[f.key]?.type === 'boolean').map((f) => f.label.toLowerCase());
   return buildResult({
     bundle,
     facts,
@@ -211,12 +250,18 @@ export function escalationResult(
     urgency,
     registry,
     memory,
-    draft: { summary: `${reasons.join(' ')} Please get emergency help now — call ${emergency.number}.`, explanations: [], questionsForClinician: [], memoryRefs: [] },
+    answerConflicts,
+    draft: {
+      summary: `${told.length ? `You told Nora about ${listText(told)}. ` : ''}Nora stopped asking questions so you can get help straight away.`,
+      explanations: [],
+      questionsForClinician: [],
+      memoryRefs: [],
+    },
     status: 'ESCALATED',
     generator: 'rules',
     model: null,
     missing: [],
-    limitations: ['Nora stopped the assessment because your answers include emergency warning signs.'],
+    limitations: [],
     emergency,
     verification: { passed: true, attempts: 0, issues: [] },
   });
@@ -230,6 +275,7 @@ export function unsupportedResult(
   registry: EvidenceRegistry,
   emergency: EmergencyContacts,
   memory: MemoryItem[] = [],
+  answerConflicts: AnswerConflict[] = [],
 ): ResultContent {
   const level: UrgencyLevel = urgency.level === 'self_care' ? 'routine' : urgency.level;
   return buildResult({
@@ -239,6 +285,7 @@ export function unsupportedResult(
     urgency: { ...urgency, level },
     registry,
     memory,
+    answerConflicts,
     draft: { summary: message, explanations: [], questionsForClinician: [], memoryRefs: [] },
     status: 'UNSUPPORTED',
     generator: 'rules',

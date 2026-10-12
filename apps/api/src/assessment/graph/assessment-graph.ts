@@ -4,7 +4,7 @@ import { Annotation, END, START, StateGraph, messagesStateReducer } from '@langc
 import { z } from 'zod';
 import type { DecisionPort } from '../../ai/decisions.js';
 import type { ModelSet } from '../../ai/models.js';
-import type { BundleContent } from '../../clinical/bundle.schema.js';
+import { type BundleContent, type UrgencyLevel, urgencyRank } from '../../clinical/bundle.schema.js';
 import {
   checkScope,
   detectConcerns,
@@ -16,9 +16,10 @@ import {
   type UrgencyOutcome,
 } from '../../clinical/rules-engine.js';
 import type { KnowledgePort } from '../../knowledge/knowledge.port.js';
-import { applyObservations, extractWithModel, mergeObservations, type TokenUsage, usageOf } from '../extraction/llm-extractor.js';
+import { applyObservations, extractWithModel, guardConfirmed, mergeObservations, type TokenUsage, usageOf } from '../extraction/llm-extractor.js';
 import { extractWithRules, type Observation } from '../extraction/rule-extractor.js';
-import type { EvidenceRef, Generator, ResultContent } from '../result.types.js';
+import type { AnswerConflict, EvidenceRef, Generator, ResultContent } from '../result.types.js';
+import { answerFacts } from './consistency.js';
 import {
   buildResult,
   caseSummary,
@@ -49,6 +50,8 @@ export interface CaseContext {
   emergency: EmergencyContacts;
   /** The check this one deliberately follows up; it does not count as a recurrence. */
   parentCheckId?: string | null;
+  /** Answer conflicts found on earlier turns of this check. */
+  conflicts?: AnswerConflict[];
   now?: Date;
 }
 
@@ -71,6 +74,8 @@ const State = Annotation.Root({
   context: last<CaseContext>(),
   facts: Annotation<FactMap>({ reducer: (a, b) => ({ ...a, ...b }), default: () => ({}) }),
   observations: Annotation<Observation[]>({ reducer: (_a, b) => b, default: () => [] }),
+  /** Conflicts found in this run's message. */
+  conflicts: Annotation<AnswerConflict[]>({ reducer: (_a, b) => b, default: () => [] }),
   asked: last<string[]>(),
   turnCount: last<number>(),
   concerns: Annotation<string[]>({ reducer: (_a, b) => b, default: () => [] }),
@@ -101,9 +106,21 @@ type Update = typeof State.Update;
 
 const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e)).slice(0, 300);
 
+const conflictsOf = (s: AssessmentState) => [...(s.context.conflicts ?? []), ...s.conflicts];
+
+/** Real verification failures, as opposed to the model not producing a draft at all. */
+const verificationFailed = (s: AssessmentState) => s.issues.some((i) => !i.startsWith('Draft could not be produced'));
+
+/**
+ * When the AI explanation failed Nora's checks, the case may be less simple
+ * than the rules alone suggest, so the result never falls back to self-care
+ * alone: it asks for a doctor's opinion and a clinician review.
+ */
+export const UNVERIFIED_FLOOR: UrgencyLevel = 'routine';
+
 function draftSchema(codes: [string, ...string[]]) {
   return z.object({
-    summary: z.string().min(20).max(1200).describe('2–4 sentence plain-language summary of the case and the required next step'),
+    summary: z.string().min(20).max(1200).describe('2–3 sentence plain-language summary of what you reported and what it may mean; the next step is shown separately'),
     explanations: z
       .array(
         z.object({
@@ -144,18 +161,20 @@ export function buildAssessmentGraph(deps: AssessmentDeps) {
     if (!s.context.patientMessage) return {};
     await stage('extracting');
     const text = s.context.patientMessage.text;
+    const apply = (observations: Observation[]): Update => {
+      const guarded = guardConfirmed(s.bundle, s.facts, observations);
+      return { observations: guarded.observations, facts: applyObservations(s.bundle, s.facts, guarded.observations), conflicts: guarded.conflicts };
+    };
     const rules = extractWithRules(s.bundle, text);
-    const ruleFacts = { ...s.facts, ...applyObservations(s.bundle, s.facts, rules) };
+    const ruleUpdate = apply(rules);
+    const ruleFacts = { ...s.facts, ...ruleUpdate.facts };
     const quick = evaluateUrgency(s.bundle, ruleFacts, detectConcerns(s.bundle, ruleFacts));
-    if (quick.level === 'emergency' || !deps.models) {
-      return { observations: rules, facts: applyObservations(s.bundle, s.facts, rules) };
-    }
+    if (quick.level === 'emergency' || !deps.models) return ruleUpdate;
     try {
       const llm = await extractWithModel(deps.models.fast, s.bundle, text);
-      const merged = mergeObservations(s.bundle, rules, llm.observations);
-      return { observations: merged, facts: applyObservations(s.bundle, s.facts, merged), usage: llm.usage };
+      return { ...apply(mergeObservations(s.bundle, rules, llm.observations)), usage: llm.usage };
     } catch (e) {
-      return { observations: rules, facts: applyObservations(s.bundle, s.facts, rules), aiErrors: [`extraction: ${errorText(e)}`] };
+      return { ...ruleUpdate, aiErrors: [`extraction: ${errorText(e)}`] };
     }
   };
 
@@ -181,14 +200,14 @@ export function buildAssessmentGraph(deps: AssessmentDeps) {
     const urgency = s.urgency!;
     const keys = urgency.triggered.filter((t) => t.level === 'emergency').map((t) => t.sourceKey);
     for (const chunk of await deps.knowledge.bySourceKeys([...new Set(keys)], 1)) registry.add(chunk);
-    const result = escalationResult(s.bundle, s.facts, concernDefs(s.bundle, s.concerns), urgency, registry, s.context.emergency, s.context.memory);
+    const result = escalationResult(s.bundle, s.facts, concernDefs(s.bundle, s.concerns), urgency, registry, s.context.emergency, s.context.memory, conflictsOf(s));
     return { outcome: 'ESCALATED', result, evidence: registry.list(), generator: 'rules' };
   };
 
   const unsupported = async (s: AssessmentState): Promise<Update> => {
     for (const chunk of await deps.knowledge.bySourceKeys(['src_self_care_general'], 1)) registry.add(chunk);
     const message = s.scope?.message ?? 'Nora cannot assess this concern yet. Please speak with a doctor.';
-    const result = unsupportedResult(s.bundle, s.facts, s.urgency!, message, registry, s.context.emergency, s.context.memory);
+    const result = unsupportedResult(s.bundle, s.facts, s.urgency!, message, registry, s.context.emergency, s.context.memory, conflictsOf(s));
     return { outcome: 'UNSUPPORTED', result, evidence: registry.list(), generator: 'rules' };
   };
 
@@ -281,7 +300,7 @@ export function buildAssessmentGraph(deps: AssessmentDeps) {
   const draft = async (s: AssessmentState): Promise<Update> => {
     const concerns = concernDefs(s.bundle, s.concerns);
     const fallback = (generator: Generator, errors: string[] = []): Update => ({
-      draft: templateDraft(s.bundle, s.facts, concerns, s.urgency!.level, registry, s.ranking ?? undefined, s.context.memory),
+      draft: templateDraft(s.bundle, s.facts, concerns, registry, s.ranking ?? undefined, s.context.memory),
       generator,
       issues: [],
       aiErrors: errors,
@@ -306,7 +325,13 @@ export function buildAssessmentGraph(deps: AssessmentDeps) {
       const { parsed, raw } = (await runnable.invoke([new SystemMessage(DRAFT_SYSTEM), new HumanMessage(JSON.stringify(payload))])) as { parsed: Draft; raw: unknown };
       return { draft: parsed, draftAttempts: s.draftAttempts + 1, generator: 'llm', usage: usageOf(raw) };
     } catch (e) {
-      return { draft: null, draftAttempts: s.draftAttempts + 1, generator: 'llm', issues: [`Draft could not be produced: ${errorText(e)}`] };
+      return {
+        draft: null,
+        draftAttempts: s.draftAttempts + 1,
+        generator: 'llm',
+        issues: [`Draft could not be produced: ${errorText(e)}`],
+        aiErrors: [`draft: ${errorText(e)}`],
+      };
     }
   };
 
@@ -326,10 +351,11 @@ export function buildAssessmentGraph(deps: AssessmentDeps) {
       memoryIds: new Set(s.context.memory.map((m) => m.id)),
       groundText,
       watchTerms: deps.watchTerms,
+      answers: answerFacts(s.bundle, s.facts),
     });
     let draftOut = s.draft;
     if (!issues.length && s.ranking) {
-      const t = templateDraft(s.bundle, s.facts, concernDefs(s.bundle, s.concerns), s.urgency!.level, registry, s.ranking);
+      const t = templateDraft(s.bundle, s.facts, concernDefs(s.bundle, s.concerns), registry, s.ranking);
       const calibrated = new Map(t.explanations.map((e) => [e.code, e.likelihood]));
       draftOut = {
         ...s.draft,
@@ -342,45 +368,67 @@ export function buildAssessmentGraph(deps: AssessmentDeps) {
   };
 
   const fallback = async (s: AssessmentState): Promise<Update> => ({
-    draft: templateDraft(s.bundle, s.facts, concernDefs(s.bundle, s.concerns), s.urgency!.level, registry, s.ranking ?? undefined, s.context.memory),
+    draft: templateDraft(s.bundle, s.facts, concernDefs(s.bundle, s.concerns), registry, s.ranking ?? undefined, s.context.memory),
     generator: 'template_fallback',
-    reviewReasons: ['ai_draft_failed_verification'],
+    reviewReasons: verificationFailed(s) ? ['ai_draft_failed_verification'] : [],
   });
 
   const finalize = async (s: AssessmentState): Promise<Update> => {
     await stage('finalizing');
     const concerns = concernDefs(s.bundle, s.concerns);
     const missing = missingRequiredFacts(s.bundle, s.facts, concerns);
+    const unverified = s.generator === 'template_fallback' && verificationFailed(s);
+    const urgency: UrgencyOutcome =
+      unverified && urgencyRank(s.urgency!.level) < urgencyRank(UNVERIFIED_FLOOR)
+        ? {
+            ...s.urgency!,
+            level: UNVERIFIED_FLOOR,
+            triggered: [
+              ...s.urgency!.triggered,
+              {
+                ruleId: 'unverified_explanation',
+                level: UNVERIFIED_FLOOR,
+                message: 'Nora couldn’t confirm an explanation for your symptoms, so it recommends a doctor’s opinion rather than self-care alone.',
+                sourceKey: 'src_self_care_general',
+                careItems: [],
+              },
+            ],
+          }
+        : s.urgency!;
     const limitations: string[] = [];
     if (missing.length) limitations.push('Some important questions were not answered, so this result is less certain. Please speak with a clinician if you are unsure.');
     if (s.generator === 'template') {
       limitations.push(
         deps.aiPaused
-          ? 'AI explanations are temporarily unavailable, so this result uses Nora’s standard approved guidance. Your urgency advice is unaffected.'
+          ? 'AI explanations are temporarily unavailable, so this result uses Nora’s standard approved guidance. Your urgency advice comes from Nora’s safety rules and is unaffected.'
           : 'AI explanations are switched off; this result uses Nora’s standard approved guidance.',
       );
     }
     if (s.generator === 'template_fallback') {
       limitations.push(
-        s.aiErrors.some((e) => e.startsWith('research:')) || (s.issues.length > 0 && s.issues.every((i) => i.startsWith('Draft could not be produced')))
-          ? 'The AI service didn’t respond properly, so Nora is showing its standard approved guidance instead. Your urgency advice is unaffected.'
-          : 'The AI explanation could not be verified, so Nora is showing its standard approved guidance instead.',
+        unverified
+          ? 'The AI explanation didn’t pass Nora’s safety checks, so it isn’t shown. The explanations below are Nora’s approved guidance, and a clinician will review this result.'
+          : 'The AI service didn’t respond properly, so Nora is showing its standard approved guidance instead. Your urgency advice comes from Nora’s safety rules and is unaffected.',
       );
     }
     if (s.reviewReasons.includes('decision_model_flagged_possible_emergency')) {
       limitations.push(`A secondary safety check suggested this may be more serious. If you feel very unwell, call ${s.context.emergency.number}.`);
     }
     const records = recordQuestions(s.context.memory);
+    const recordNames = s.context.memory.filter((m) => records.refs.includes(m.id)).map((m) => m.text.toLowerCase());
     const draft: Draft = {
       ...s.draft!,
-      questionsForClinician: [...new Set([...records.questions, ...s.draft!.questionsForClinician])].slice(0, 5),
+      questionsForClinician: [
+        ...new Set([...records.questions, ...s.draft!.questionsForClinician.filter((q) => !recordNames.some((n) => q.toLowerCase().includes(n)))]),
+      ].slice(0, 5),
       memoryRefs: [...new Set([...s.draft!.memoryRefs, ...records.refs])],
     };
     const result = buildResult({
       bundle: s.bundle,
       facts: s.facts,
       concerns,
-      urgency: s.urgency!,
+      urgency,
+      answerConflicts: conflictsOf(s),
       registry,
       draft,
       status: missing.length ? 'INCOMPLETE' : 'COMPLETED',
@@ -392,7 +440,7 @@ export function buildAssessmentGraph(deps: AssessmentDeps) {
       verification: { passed: s.issues.length === 0, attempts: s.draftAttempts, issues: s.issues },
       memory: s.context.memory,
     });
-    return { outcome: missing.length ? 'INCOMPLETE' : 'COMPLETED', result, evidence: registry.list() };
+    return { outcome: missing.length ? 'INCOMPLETE' : 'COMPLETED', result, evidence: registry.list(), urgency };
   };
 
   const graph = new StateGraph(State)

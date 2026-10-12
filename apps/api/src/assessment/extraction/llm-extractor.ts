@@ -4,6 +4,7 @@ import { z } from 'zod';
 import type { BundleContent } from '../../clinical/bundle.schema.js';
 import type { FactMap } from '../../clinical/rules-engine.js';
 import { EXTRACTION_SYSTEM } from '../graph/prompts.js';
+import type { AnswerConflict } from '../result.types.js';
 import type { Observation } from './rule-extractor.js';
 
 export interface TokenUsage {
@@ -50,7 +51,11 @@ function numberGrounded(value: number, quote: string, unit: string | undefined):
   return written.some((n) => Math.abs(n - value) < 0.05 || (unit === '°C' && Math.abs(((n - 32) * 5) / 9 - value) < 0.2));
 }
 
-/** Drops anything the model could not ground in the patient's own words. */
+/**
+ * Drops anything the model could not ground in the patient's own words. A
+ * warning sign can only be ruled out by a quote that names it, so the model
+ * cannot skip a safety question on the patient's behalf.
+ */
 export function validateObservations(bundle: BundleContent, message: string, raw: z.infer<ReturnType<typeof extractionSchema>>['observations']): Observation[] {
   const haystack = normalise(message);
   const out: Observation[] = [];
@@ -59,6 +64,7 @@ export function validateObservations(bundle: BundleContent, message: string, raw
     if (!def || !o.quote.trim() || !haystack.includes(normalise(o.quote))) continue;
     if (o.assertion !== 'affirmed' && o.assertion !== 'negated') continue;
     const state = o.assertion === 'negated' ? 'ABSENT' : 'PRESENT';
+    if (state === 'ABSENT' && def.critical && ![def.label, ...def.synonyms].some((t) => normalise(o.quote).includes(normalise(t)))) continue;
     if (def.type === 'number') {
       if (state !== 'PRESENT' || o.value === null || !Number.isFinite(o.value)) continue;
       const { min, max } = numberRange(bundle, o.factKey);
@@ -102,6 +108,38 @@ export function mergeObservations(bundle: BundleContent, rules: Observation[], l
     else if (bundle.facts[r.factKey]?.type === 'number' && r.value !== undefined && r.value !== null) merged.set(r.factKey, r);
   }
   return [...merged.values()];
+}
+
+const CONFIRMED_SOURCES = new Set(['answer', 'profile', 'correction']);
+
+/**
+ * A yes/no the patient gave is never changed by reading a later message.
+ * Disagreements are reported instead; the one exception is a warning sign
+ * they answered "no" to and later describe, which is treated as present to
+ * be safe and reported too.
+ */
+export function guardConfirmed(bundle: BundleContent, facts: FactMap, observations: Observation[]): { observations: Observation[]; conflicts: AnswerConflict[] } {
+  const kept: Observation[] = [];
+  const conflicts: AnswerConflict[] = [];
+  for (const o of observations) {
+    const current = facts[o.factKey];
+    const def = bundle.facts[o.factKey];
+    const answered = current && CONFIRMED_SOURCES.has(current.source ?? '') && (current.state === 'PRESENT' || current.state === 'ABSENT');
+    if (!def || def.type !== 'boolean' || !answered || current.state === o.state) {
+      kept.push(o);
+      continue;
+    }
+    const safety = def.critical && o.state === 'PRESENT';
+    conflicts.push({
+      key: o.factKey,
+      label: def.label,
+      answered: current.state === 'PRESENT' ? 'yes' : 'no',
+      mentioned: o.state === 'PRESENT' ? 'yes' : 'no',
+      resolution: safety ? 'treated_as_present' : 'kept_answer',
+    });
+    if (safety) kept.push(o);
+  }
+  return { observations: kept, conflicts };
 }
 
 /** Returns only facts that change. Extraction never clears a critical PRESENT; that needs an explicit answer. */

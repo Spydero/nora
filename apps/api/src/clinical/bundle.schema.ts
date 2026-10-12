@@ -114,6 +114,12 @@ const careItemSchema = z.object({
   text: z.string(),
   timeframe: z.string().optional(),
   sourceKey: z.string(),
+  /**
+   * For "get help if…" items: the conditions the text describes and the level
+   * they call for. If one already holds, the warning has happened, so the
+   * engine raises urgency instead of telling the patient to watch for it.
+   */
+  escalate: z.array(z.object({ level: z.enum(URGENCY_LEVELS), when: conditionSchema })).default([]),
 });
 
 const sentinelSchema = z.object({
@@ -181,6 +187,7 @@ export const bundleContentSchema = z
       walk(rule.when, `rule ${rule.id}`);
       rule.careItems.forEach((i) => !care.has(i) && issue(`rule ${rule.id} care item ${i} missing`));
     }
+    for (const [id, item] of Object.entries(content.careItems)) item.escalate.forEach((e) => walk(e.when, `care item ${id}`));
     for (const exclusion of content.exclusions) walk(exclusion.when, `exclusion ${exclusion.id}`);
     for (const action of Object.values(content.urgencyActions)) {
       action.careItems.forEach((i) => !care.has(i) && issue(`urgency action care item ${i} missing`));

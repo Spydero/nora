@@ -1,15 +1,14 @@
 "use client";
 
 import Link from "next/link";
-import { AlertTriangle, CalendarClock, Check, ChevronRight, ClipboardList, History, MessageCircleQuestion, Phone, RefreshCw, ShieldCheck, Stethoscope } from "lucide-react";
+import type { ReactNode } from "react";
+import { AlertTriangle, CalendarClock, Check, ChevronRight, History, MessageCircleQuestion, Phone, RefreshCw, ShieldCheck } from "lucide-react";
 import { Button, Card, cn, Panel, StatusBadge } from "@nora/ui";
 import { URGENCY_LABEL } from "@/lib/care";
-import { checksApi, type CheckView, type MemoryItem, TERMINAL } from "@/lib/checks";
+import { type CarePlanItem, checksApi, type CheckView, type MemoryItem, TERMINAL } from "@/lib/checks";
 import type { CheckController } from "@/lib/use-check";
 import { useLoad } from "@/lib/use-load";
 import { URGENCY_STATUS } from "./findings-panel";
-
-const KIND_ICON: Record<string, typeof ClipboardList> = { urgent_action: Phone, handoff: Stethoscope };
 
 export function NextStepsPanel({ controller, className }: { controller: CheckController; className?: string }) {
   const { check } = controller;
@@ -21,13 +20,42 @@ export function NextStepsPanel({ controller, className }: { controller: CheckCon
   );
 }
 
+const isWatch = (i: CarePlanItem) => i.watch ?? i.kind === "monitoring";
+
 function ResultSteps({ check, controller }: { check: CheckView; controller: CheckController }) {
   const result = check.result!;
-  const emergency = result.urgency.level === "emergency";
   const done = new Set(check.carePlanDone);
   const finished = TERMINAL.includes(check.status);
-  const tasks = emergency ? result.carePlan : result.carePlan.filter((i) => i.kind !== "monitoring");
-  const watch = emergency ? [] : result.carePlan.filter((i) => i.kind === "monitoring");
+  if (result.urgency.level === "emergency") {
+    return (
+      <div className="flex flex-col gap-2">
+        <p className="flex items-start gap-2 text-body">
+          <Phone aria-hidden className="mt-1 size-4 shrink-0 text-danger" />
+          Follow the emergency advice at the top of the page first. Nothing else here needs doing until you’ve got help.
+        </p>
+        {result.carePlan
+          .filter((i) => i.kind !== "urgent_action")
+          .map((i) => (
+            <Card key={i.id}>
+              <p className="text-body">{i.text}</p>
+            </Card>
+          ))}
+      </div>
+    );
+  }
+  const tasks = result.carePlan.filter((i) => !isWatch(i) && !i.whileWaiting);
+  const comfort = result.carePlan.filter((i) => !isWatch(i) && i.whileWaiting);
+  const watch = result.carePlan.filter(isWatch);
+  const seeDoctor = result.handoff.recommended ? tasks.find((i) => i.kind === "handoff" || i.kind === "urgent_action") : undefined;
+  const findDoctor = result.handoff.recommended && (
+    <Link
+      href={`/doctors?${new URLSearchParams({ ...(result.handoff.specialty ? { specialty: result.handoff.specialty } : {}), check: check.id }).toString()}`}
+      className="text-secondary font-medium text-brand-teal underline-offset-2 hover:underline"
+    >
+      Find a {result.handoff.specialty ? result.handoff.specialty.toLowerCase() : "doctor"}
+    </Link>
+  );
+  const allTasks = [...tasks, ...comfort];
   return (
     <div className="flex flex-col gap-4">
       <section aria-labelledby="plan-h" className="flex flex-col gap-2">
@@ -35,45 +63,22 @@ function ResultSteps({ check, controller }: { check: CheckView; controller: Chec
           <h3 id="plan-h" className="text-card-title font-semibold">
             Your care plan
           </h3>
-          {!emergency && tasks.length > 1 && (
+          {allTasks.length > 1 && (
             <span className="text-meta text-fg-muted">
-              {tasks.filter((i) => done.has(i.id)).length} of {tasks.length} done
+              {allTasks.filter((i) => done.has(i.id)).length} of {allTasks.length} done
             </span>
           )}
         </div>
-        <ol aria-label="Care plan" className="flex flex-col gap-2">
-          {tasks.map((item, i) => {
-            const Icon = KIND_ICON[item.kind] ?? ClipboardList;
-            const checked = done.has(item.id);
-            return (
-              <li key={item.id}>
-                <Card className={cn("flex gap-3", i === 0 && "border-brand-teal", checked && "bg-subtle")}>
-                  {emergency ? (
-                    <Icon aria-hidden className="mt-0.5 size-5 shrink-0 text-brand-teal" />
-                  ) : (
-                    <input
-                      type="checkbox"
-                      checked={checked}
-                      onChange={(event) => void controller.acknowledge(item.id, event.target.checked)}
-                      aria-label={`Mark done: ${item.text}`}
-                      className="mt-1 size-4 shrink-0 accent-brand-teal"
-                    />
-                  )}
-                  <div className="flex flex-col gap-1">
-                    <p className={cn("text-body", checked && "text-fg-muted line-through decoration-fg-muted/60")}>{item.text}</p>
-                    {item.timeframe && (
-                      <p className="inline-flex items-center gap-1 text-meta font-medium text-fg-muted">
-                        <CalendarClock aria-hidden className="size-3.5" />
-                        {item.timeframe}
-                      </p>
-                    )}
-                  </div>
-                </Card>
-              </li>
-            );
-          })}
-        </ol>
-        {!emergency && <p className="text-meta text-fg-muted">Ticking items off is just for you. It doesn’t change Nora’s advice.</p>}
+        <TaskList items={tasks} done={done} controller={controller} highlight={tasks[0]?.id} extra={seeDoctor ? { id: seeDoctor.id, node: findDoctor } : undefined} />
+        {!seeDoctor && findDoctor}
+        {comfort.length > 0 && (
+          <div className="flex flex-col gap-2 pt-1">
+            <h4 className="font-semibold">Until you’re seen</h4>
+            <p className="text-meta text-fg-muted">These may ease discomfort while you wait. They don’t replace seeing a doctor.</p>
+            <TaskList items={comfort} done={done} controller={controller} />
+          </div>
+        )}
+        <p className="text-meta text-fg-muted">Ticking items off is just for you. It doesn’t change Nora’s advice.</p>
       </section>
 
       {watch.length > 0 && (
@@ -90,20 +95,6 @@ function ResultSteps({ check, controller }: { check: CheckView; controller: Chec
         </section>
       )}
 
-      {result.handoff.recommended && !emergency && (
-        <Card className="flex flex-col gap-2 bg-subtle">
-          <p className="font-semibold">
-            See {result.handoff.specialty ? `a ${result.handoff.specialty.toLowerCase()}` : "a doctor"} · {result.handoff.timeframe}
-          </p>
-          <Link
-            href={`/doctors?${new URLSearchParams({ ...(result.handoff.specialty ? { specialty: result.handoff.specialty } : {}), check: check.id }).toString()}`}
-            className="text-secondary font-medium text-brand-teal underline-offset-2 hover:underline"
-          >
-            Find a {result.handoff.specialty ? result.handoff.specialty.toLowerCase() : "doctor"}
-          </Link>
-        </Card>
-      )}
-
       {result.questionsForClinician.length > 0 && (
         <section aria-labelledby="ask-h" className="flex flex-col gap-1">
           <h3 id="ask-h" className="flex items-center gap-2 text-card-title font-semibold">
@@ -118,7 +109,7 @@ function ResultSteps({ check, controller }: { check: CheckView; controller: Chec
         </section>
       )}
 
-      {finished && !emergency && (
+      {finished && (
         <Card className="flex flex-col gap-2">
           <p className="font-semibold">Symptoms changed?</p>
           <p className="text-secondary text-fg-muted">Start a follow-up check. Nora will link it to this one so you and your doctor can compare.</p>
@@ -129,6 +120,52 @@ function ResultSteps({ check, controller }: { check: CheckView; controller: Chec
         </Card>
       )}
     </div>
+  );
+}
+
+function TaskList({
+  items,
+  done,
+  controller,
+  highlight,
+  extra,
+}: {
+  items: CarePlanItem[];
+  done: Set<string>;
+  controller: CheckController;
+  highlight?: string;
+  extra?: { id: string; node: ReactNode };
+}) {
+  if (items.length === 0) return null;
+  return (
+    <ol className="flex flex-col gap-2">
+      {items.map((item) => {
+        const checked = done.has(item.id);
+        return (
+          <li key={item.id}>
+            <Card className={cn("flex gap-3", item.id === highlight && "border-brand-teal", checked && "bg-subtle")}>
+              <input
+                type="checkbox"
+                checked={checked}
+                onChange={(event) => void controller.acknowledge(item.id, event.target.checked)}
+                aria-label={`Mark done: ${item.text}`}
+                className="mt-1 size-4 shrink-0 accent-brand-teal"
+              />
+              <div className="flex flex-col gap-1">
+                <p className={cn("text-body", checked && "text-fg-muted line-through decoration-fg-muted/60")}>{item.text}</p>
+                {item.timeframe && (
+                  <p className="inline-flex items-center gap-1 text-meta font-medium text-fg-muted">
+                    <CalendarClock aria-hidden className="size-3.5" />
+                    {item.timeframe}
+                  </p>
+                )}
+                {extra?.id === item.id && extra.node}
+              </div>
+            </Card>
+          </li>
+        );
+      })}
+    </ol>
   );
 }
 
