@@ -29,6 +29,12 @@ export const envSchema = z.object({
   /** Calibrated classifier on /api/alpha/decisions: ranks candidates and cross-checks urgency. */
   OPENROUTER_DECISION_MODEL: z.string().default('inception/mercury-decide:free'),
   OPENROUTER_EMBEDDING_MODEL: z.string().default('nvidia/llama-nemotron-embed-vl-1b-v2:free'),
+  /** Fallback provider, used when OpenRouter is rate-limited or failing. Empty means no fallback. */
+  GEMINI_API_KEY: z.string().default(''),
+  GEMINI_BASE_URL: z.url().default('https://generativelanguage.googleapis.com/v1beta/openai/'),
+  /** Free-tier limits are per model, so the two roles use different models to spread the quota. */
+  GEMINI_MODEL: z.string().default('gemini-3.5-flash-lite'),
+  GEMINI_FAST_MODEL: z.string().default('gemini-3.1-flash-lite'),
   AI_TIMEOUT_MS: z.coerce.number().int().positive().default(45_000),
   AI_MAX_RESEARCH_ROUNDS: z.coerce.number().int().min(0).max(5).default(3),
   WORKER_ENABLED: z

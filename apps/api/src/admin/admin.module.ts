@@ -5,11 +5,15 @@ import { CurrentPrincipal, Roles } from '../auth/decorators.js';
 import { ZodValidationPipe } from '../common/zod-validation.pipe.js';
 import { ReviewModule } from '../review/review.module.js';
 import { AdminService, auditQuerySchema, memberUpdateSchema, providerStatusSchema, toggleSchema } from './admin.service.js';
+import { analyticsQuerySchema, InsightsService } from './insights.service.js';
 
 @Controller('admin')
 @Roles('TENANT_ADMIN')
 export class AdminController {
-  constructor(private readonly admin: AdminService) {}
+  constructor(
+    private readonly admin: AdminService,
+    private readonly insights: InsightsService,
+  ) {}
 
   @Get('overview')
   overview(@CurrentPrincipal() principal: AuthPrincipal) {
@@ -35,6 +39,11 @@ export class AdminController {
     return this.admin.updateMember(principal, id, body);
   }
 
+  @Get('analytics')
+  analytics(@CurrentPrincipal() principal: AuthPrincipal, @Query(new ZodValidationPipe(analyticsQuerySchema)) query: z.infer<typeof analyticsQuerySchema>) {
+    return this.insights.analytics(principal.tenantId, query.range);
+  }
+
   @Get('audit')
   audit(@CurrentPrincipal() principal: AuthPrincipal, @Query(new ZodValidationPipe(auditQuerySchema)) query: z.infer<typeof auditQuerySchema>) {
     return this.admin.auditLog(principal, query.limit);
@@ -58,7 +67,15 @@ export class AdminController {
 @Controller('platform')
 @Roles('PLATFORM_OPERATOR')
 export class PlatformController {
-  constructor(private readonly admin: AdminService) {}
+  constructor(
+    private readonly admin: AdminService,
+    private readonly insights: InsightsService,
+  ) {}
+
+  @Get('health')
+  health() {
+    return this.insights.health();
+  }
 
   @Get('flags')
   flags() {
@@ -82,5 +99,5 @@ export class ContentController {
   }
 }
 
-@Module({ imports: [ReviewModule], controllers: [AdminController, PlatformController, ContentController], providers: [AdminService] })
+@Module({ imports: [ReviewModule], controllers: [AdminController, PlatformController, ContentController], providers: [AdminService, InsightsService] })
 export class AdminModule {}

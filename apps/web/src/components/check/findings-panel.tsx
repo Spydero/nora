@@ -1,6 +1,7 @@
 "use client";
 
-import { FileSearch, Loader2, Stethoscope } from "lucide-react";
+import { useState } from "react";
+import { FileSearch, History, Loader2, Stethoscope } from "lucide-react";
 import { Alert, Card, cn, Panel, StatusBadge, type Status } from "@nora/ui";
 import type { CheckResult, CheckView, UrgencyLevel } from "@/lib/checks";
 import { EmptyState } from "./intake-panel";
@@ -22,7 +23,7 @@ const LIKELIHOOD: Record<CheckResult["explanations"][number]["likelihood"], { la
 const GENERATOR: Record<CheckResult["generator"], string> = {
   llm: "Explanations written by AI from approved sources, then checked by Nora’s safety rules.",
   template: "Nora’s standard approved guidance.",
-  template_fallback: "Nora’s standard approved guidance (the AI explanation did not pass safety checks).",
+  template_fallback: "Nora’s standard approved guidance (the AI explanation was unavailable or did not pass safety checks).",
   rules: "Safety rules decided this result; no AI was used.",
 };
 
@@ -61,7 +62,7 @@ export function FindingsPanel({ check, className }: { check: CheckView | null; c
           />
         )
       ) : (
-        <ResultView result={result} review={check?.review ?? null} />
+        <ResultView key={result.createdAt} result={result} review={check?.review ?? null} parent={check?.parent ?? null} />
       )}
     </Panel>
   );
@@ -99,11 +100,33 @@ function ClinicianReview({ review }: { review: NonNullable<CheckView["review"]> 
   );
 }
 
-export function ResultView({ result, review }: { result: CheckResult; review: CheckView["review"] }) {
+export function ResultView({
+  result,
+  review,
+  parent = null,
+  defaultTerms = "plain",
+}: {
+  result: CheckResult;
+  review: CheckView["review"];
+  parent?: CheckView["parent"];
+  defaultTerms?: "plain" | "clinical";
+}) {
   const status = URGENCY_STATUS[result.urgency.level];
+  const [terms, setTerms] = useState(defaultTerms);
+  const usedRecords = result.memory?.filter((m) => m.used) ?? [];
   return (
     <div className="flex flex-col gap-4">
       {review && <ClinicianReview review={review} />}
+      {parent && (
+        <p className="flex items-start gap-2 rounded-card bg-subtle px-3 py-2 text-secondary">
+          <History aria-hidden className="mt-0.5 size-4 shrink-0 text-brand-teal" />
+          <span>
+            Follow-up to your check on {new Date(parent.createdAt).toLocaleDateString("en-IN", { dateStyle: "medium" })}
+            {parent.title ? ` (${parent.title})` : ""}
+            {parent.urgencyTitle ? `. Then, Nora advised: ${parent.urgencyTitle.toLowerCase()}.` : "."}
+          </span>
+        </p>
+      )}
       <Alert status={status} title={result.urgency.title}>
         <p>{result.urgency.text}</p>
         {result.urgency.reasons.length > 0 && (
@@ -126,9 +149,25 @@ export function ResultView({ result, review }: { result: CheckResult; review: Ch
 
       {result.explanations.length > 0 && (
         <section aria-labelledby="expl-h" className="flex flex-col gap-2">
-          <h3 id="expl-h" className="text-card-title font-semibold">
-            Possible explanations
-          </h3>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h3 id="expl-h" className="text-card-title font-semibold">
+              Possible explanations
+            </h3>
+            <div role="radiogroup" aria-label="Wording" className="flex rounded-control bg-subtle p-0.5 text-meta font-medium">
+              {(["plain", "clinical"] as const).map((t) => (
+                <button
+                  key={t}
+                  type="button"
+                  role="radio"
+                  aria-checked={terms === t}
+                  onClick={() => setTerms(t)}
+                  className={cn("rounded-control px-2.5 py-1", terms === t ? "bg-panel text-brand-navy shadow-sm" : "text-fg-muted")}
+                >
+                  {t === "plain" ? "Plain words" : "Medical terms"}
+                </button>
+              ))}
+            </div>
+          </div>
           <p className="text-meta text-fg-muted">These are possibilities to discuss with a doctor, not a diagnosis.</p>
           {result.explanations.map((e) => (
             <Card key={e.code} className="flex flex-col gap-1.5">
@@ -136,7 +175,7 @@ export function ResultView({ result, review }: { result: CheckResult; review: Ch
                 <p className="font-semibold">{e.label}</p>
                 <span className={cn("rounded-control px-2 py-0.5 text-meta font-medium", LIKELIHOOD[e.likelihood].className)}>{LIKELIHOOD[e.likelihood].label}</span>
               </div>
-              <p className="text-secondary text-fg-muted">{e.plain}</p>
+              <p className="text-secondary text-fg-muted">{terms === "clinical" && e.clinical ? e.clinical : e.plain}</p>
               <p className="text-secondary">
                 {e.rationale.replace(/\s*\(?\bE\d+\b(,\s*E\d+)*\)?/g, "")} <Citations ids={e.citations} />
               </p>
@@ -153,6 +192,22 @@ export function ResultView({ result, review }: { result: CheckResult; review: Ch
         <FactChips label="You don’t have" items={result.findings.absent} tone="absent" />
         <FactChips label="Not answered" items={result.findings.unknown} tone="unknown" />
       </section>
+
+      {usedRecords.length > 0 && (
+        <section aria-labelledby="records-h" className="flex flex-col gap-2">
+          <h3 id="records-h" className="text-card-title font-semibold">
+            From your records
+          </h3>
+          <p className="text-meta text-fg-muted">Nora used only these confirmed records for this check.</p>
+          <ul className="flex flex-col gap-1 text-secondary">
+            {usedRecords.map((m) => (
+              <li key={m.id}>
+                <span className="text-fg-muted">{m.label}:</span> {m.text}
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
 
       {result.limitations
         .filter((l) => l !== result.summary)

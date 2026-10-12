@@ -1,7 +1,7 @@
 import { HttpStatus, Injectable } from '@nestjs/common';
 import type { AuthPrincipal } from '../auth/auth.types.js';
 import type { QuestionDef } from '../clinical/bundle.schema.js';
-import type { FactMap } from '../clinical/rules-engine.js';
+import { type FactMap, presentQuestion } from '../clinical/rules-engine.js';
 import { AppException } from '../common/app.exception.js';
 import { ConsentService } from '../consent/consent.service.js';
 import { Prisma } from '../generated/prisma/client.js';
@@ -44,6 +44,10 @@ export interface CheckView {
     patientNote: string | null;
     reviewedAt: string | null;
   } | null;
+  /** Care-plan items the patient marked done (logistics only; never changes urgency). */
+  carePlanDone: string[];
+  /** The earlier check this one follows up, as it was when it finished. */
+  parent: { id: string; title: string | null; createdAt: string; urgency: string | null; urgencyTitle: string | null; summary: string | null } | null;
 }
 
 const ACTIVE = ['DRAFT', 'COLLECTING'] as const;
@@ -56,11 +60,17 @@ export class ChecksService {
     private readonly consent: ConsentService,
   ) {}
 
-  async create(principal: AuthPrincipal, idempotencyKey: string): Promise<CheckView> {
+  async create(principal: AuthPrincipal, idempotencyKey: string, parentId?: string): Promise<CheckView> {
     const existing = await this.prisma.assessmentSession.findUnique({
       where: { tenantId_patientUserId_idempotencyKey: { tenantId: principal.tenantId, patientUserId: principal.userId, idempotencyKey } },
     });
     if (existing) return this.view(principal, existing.id);
+    if (parentId) {
+      const parent = await this.owned(principal, parentId);
+      if ((ACTIVE as readonly string[]).includes(parent.status) || parent.status === 'ASSESSING') {
+        throw new AppException(HttpStatus.CONFLICT, 'PARENT_NOT_FINISHED', 'Finish the earlier check before starting a follow-up.');
+      }
+    }
 
     const tenantCtx = await this.store.tenantContext(principal.tenantId);
     if (!tenantCtx.assessmentEnabled) {
@@ -83,6 +93,7 @@ export class ChecksService {
           bundleId: tenant.activeBundleId!,
           status: 'COLLECTING',
           idempotencyKey,
+          parentSessionId: parentId ?? null,
         },
       });
       await this.store.writeFacts(tx, created.id, prefill, 0);
@@ -97,7 +108,7 @@ export class ChecksService {
       where: { tenantId: principal.tenantId, patientUserId: principal.userId, status: { not: 'ARCHIVED' } },
       orderBy: { createdAt: 'desc' },
       take: 20,
-      select: { id: true, title: true, status: true, urgency: true, createdAt: true, updatedAt: true, currentResultId: true },
+      select: { id: true, title: true, status: true, urgency: true, createdAt: true, updatedAt: true, currentResultId: true, parentSessionId: true },
     });
     const resultIds = rows.map((r) => r.currentResultId).filter((x): x is string => !!x);
     const results = await this.prisma.assessmentResult.findMany({ where: { id: { in: resultIds } }, select: { id: true, reviewStatus: true } });
@@ -134,9 +145,10 @@ export class ChecksService {
     if (session.inputVersion !== inputVersion || session.pendingQuestionId !== questionId) {
       throw new AppException(HttpStatus.CONFLICT, 'STALE_INPUT', 'This question has changed. Please review the latest question.', true);
     }
-    const bundle = await this.store.bundle(session.bundleId);
-    const question = bundle.questions[questionId];
-    if (!question) throw new AppException(HttpStatus.BAD_REQUEST, 'UNKNOWN_QUESTION', 'This question is not part of the check.');
+    const [bundle, facts] = await Promise.all([this.store.bundle(session.bundleId), this.store.facts(this.prisma, id)]);
+    const defined = bundle.questions[questionId];
+    if (!defined) throw new AppException(HttpStatus.BAD_REQUEST, 'UNKNOWN_QUESTION', 'This question is not part of the check.');
+    const question = presentQuestion(defined, facts);
 
     let mapped;
     try {
@@ -186,9 +198,14 @@ export class ChecksService {
         : null,
     ]);
     const decision = reviewTask?.decisions[0];
-    const reviewer = decision ? await this.prisma.user.findUnique({ where: { id: decision.clinicianId }, select: { displayName: true } }) : null;
+    const [reviewer, acks, parent] = await Promise.all([
+      decision ? this.prisma.user.findUnique({ where: { id: decision.clinicianId }, select: { displayName: true } }) : null,
+      session.currentResultId ? this.prisma.taskAcknowledgement.findMany({ where: { resultId: session.currentResultId }, select: { itemId: true } }) : [],
+      session.parentSessionId ? this.parentSnapshot(principal, session.parentSessionId) : null,
+    ]);
     const reviewVisible = !!reviewTask && (!!decision || (await this.consent.hasGranted(principal.tenantId, principal.userId, 'CLINICIAN_SHARING')));
-    const q = session.pendingQuestionId ? bundle.questions[session.pendingQuestionId] : undefined;
+    const defined = session.pendingQuestionId ? bundle.questions[session.pendingQuestionId] : undefined;
+    const q = defined ? presentQuestion(defined, await this.store.facts(this.prisma, id)) : undefined;
     return {
       id: session.id,
       status: session.status,
@@ -225,6 +242,46 @@ export class ChecksService {
             reviewedAt: decision?.createdAt.toISOString() ?? null,
           }
         : null,
+      carePlanDone: acks.map((a) => a.itemId),
+      parent,
+    };
+  }
+
+  /** Marks a care-plan item done or not done. Purely logistical: urgency and the result are untouched. */
+  async acknowledge(principal: AuthPrincipal, id: string, itemId: string, done: boolean): Promise<CheckView> {
+    const session = await this.owned(principal, id);
+    const result = session.currentResultId ? await this.prisma.assessmentResult.findUnique({ where: { id: session.currentResultId } }) : null;
+    const content = result?.content as unknown as ResultContent | undefined;
+    if (!result || !content?.carePlan.some((i) => i.id === itemId)) {
+      throw new AppException(HttpStatus.NOT_FOUND, 'CARE_ITEM_NOT_FOUND', 'This care-plan item could not be found.');
+    }
+    if (done) {
+      await this.prisma.taskAcknowledgement.upsert({
+        where: { resultId_itemId: { resultId: result.id, itemId } },
+        update: {},
+        create: { resultId: result.id, itemId, userId: principal.userId },
+      });
+    } else {
+      await this.prisma.taskAcknowledgement.deleteMany({ where: { resultId: result.id, itemId } });
+    }
+    return this.view(principal, id);
+  }
+
+  private async parentSnapshot(principal: AuthPrincipal, parentId: string): Promise<CheckView['parent']> {
+    const parent = await this.prisma.assessmentSession.findFirst({
+      where: { id: parentId, tenantId: principal.tenantId, patientUserId: principal.userId },
+      select: { id: true, title: true, createdAt: true, urgency: true, currentResultId: true },
+    });
+    if (!parent) return null;
+    const result = parent.currentResultId ? await this.prisma.assessmentResult.findUnique({ where: { id: parent.currentResultId }, select: { content: true } }) : null;
+    const content = result?.content as unknown as ResultContent | undefined;
+    return {
+      id: parent.id,
+      title: parent.title,
+      createdAt: parent.createdAt.toISOString(),
+      urgency: content?.urgency.level ?? parent.urgency,
+      urgencyTitle: content?.urgency.title ?? null,
+      summary: content?.summary ?? null,
     };
   }
 

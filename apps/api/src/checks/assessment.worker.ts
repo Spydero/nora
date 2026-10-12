@@ -1,13 +1,14 @@
 import { createHash } from 'node:crypto';
 import { Injectable, Logger, type OnModuleDestroy, type OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { AiService } from '../ai/ai.service.js';
+import { type AiProvider, AiService, isProviderFailure, type ProviderName } from '../ai/ai.service.js';
 import { runAssessment } from '../assessment/graph/assessment-graph.js';
 import { PROMPT_VERSION } from '../assessment/graph/prompts.js';
 import type { FactMap } from '../clinical/rules-engine.js';
 import type { Env } from '../config/env.js';
 import { Prisma } from '../generated/prisma/client.js';
 import { DbKnowledge } from '../knowledge/db-knowledge.js';
+import { MemoryService } from '../memory/memory.service.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { CaseStore, type FactProvenance } from './case-store.js';
 import { ASSESS_JOB } from './checks.service.js';
@@ -42,6 +43,7 @@ export class AssessmentWorker implements OnModuleInit, OnModuleDestroy {
     private readonly prisma: PrismaService,
     private readonly store: CaseStore,
     private readonly ai: AiService,
+    private readonly memory: MemoryService,
     private readonly config: ConfigService<Env, true>,
   ) {}
 
@@ -104,39 +106,62 @@ export class AssessmentWorker implements OnModuleInit, OnModuleDestroy {
     const session = await this.prisma.assessmentSession.findUnique({ where: { id: job.resource_id } });
     if (!session || session.inputVersion !== inputVersion) return;
 
-    const [bundle, tenantCtx, facts, asked, message, profileLines] = await Promise.all([
+    const [bundle, tenantCtx, facts, asked, message, memory, watchTerms] = await Promise.all([
       this.store.bundle(session.bundleId),
       this.store.tenantContext(session.tenantId),
       this.store.facts(this.prisma, session.id),
       this.store.askedQuestions(this.prisma, session.id),
       job.payload.messageId ? this.prisma.message.findUnique({ where: { id: job.payload.messageId } }) : null,
-      this.profileLines(session.tenantId, session.patientUserId),
+      this.memory.forPatient(session.tenantId, session.patientUserId, { excludeSessionId: session.id }),
+      this.watchTerms(session.tenantId),
     ]);
-    const useAi = tenantCtx.aiEnabled && !templateOnly;
+    const aiPaused = tenantCtx.aiEnabled && this.ai.configured() && !this.ai.available();
+    let provider = tenantCtx.aiEnabled && !templateOnly ? this.ai.next() : null;
+    const tried: ProviderName[] = [];
     const started = Date.now();
     await this.store.event(this.prisma, session.id, 'stage', { stage: 'started' });
 
-    const out = await runAssessment(
-      {
-        models: useAi ? this.ai.models : null,
-        decisions: useAi ? this.ai.decisions : null,
-        knowledge: new DbKnowledge(this.prisma, session.tenantId),
-        maxResearchRounds: this.ai.maxResearchRounds,
-        onStage: (stage, detail) =>
-          this.store.event(this.prisma, session.id, 'stage', {
-            stage,
-            ...Object.fromEntries(Object.entries(detail ?? {}).filter(([k]) => DISPLAY_DETAIL_KEYS.includes(k))),
-          }),
-      },
-      {
-        bundle,
-        context: { patientMessage: message ? { id: message.id, text: message.text } : null, profileLines, emergency: tenantCtx.emergency },
-        facts,
-        asked,
-        turnCount: session.turnCount,
-      },
-    );
-    if (out.aiErrors.length) this.logger.warn(`Assessment ${session.id} AI issues: ${out.aiErrors.join(' | ')}`);
+    const run = (p: AiProvider | null) =>
+      runAssessment(
+        {
+          models: p?.models ?? null,
+          decisions: p?.decisions ?? null,
+          knowledge: new DbKnowledge(this.prisma, session.tenantId),
+          maxResearchRounds: this.ai.maxResearchRounds,
+          aiPaused,
+          watchTerms,
+          onStage: (stage, detail) =>
+            this.store.event(this.prisma, session.id, 'stage', {
+              stage,
+              ...Object.fromEntries(Object.entries(detail ?? {}).filter(([k]) => DISPLAY_DETAIL_KEYS.includes(k))),
+            }),
+        },
+        {
+          bundle,
+          context: {
+            patientMessage: message ? { id: message.id, text: message.text } : null,
+            memory,
+            emergency: tenantCtx.emergency,
+            parentCheckId: session.parentSessionId,
+          },
+          facts,
+          asked,
+          turnCount: session.turnCount,
+        },
+      );
+
+    let out = await run(provider);
+    while (provider) {
+      if (out.aiErrors.length) this.logger.warn(`Assessment ${session.id} AI issues (${provider.label}): ${out.aiErrors.join(' | ')}`);
+      const calledModel = out.usage.inputTokens > 0 || out.aiErrors.length > 0;
+      if (calledModel) this.ai.record(provider, out.aiErrors);
+      tried.push(provider.name);
+      const fallback = out.aiErrors.some(isProviderFailure) ? this.ai.next(Date.now(), tried) : null;
+      if (!fallback) break;
+      this.logger.warn(`Assessment ${session.id}: ${provider.label} failed, retrying with ${fallback.label}`);
+      provider = fallback;
+      out = await run(provider);
+    }
     const outcome = out.outcome;
     if (!outcome) throw new Error('Assessment finished without an outcome');
 
@@ -242,22 +267,17 @@ export class AssessmentWorker implements OnModuleInit, OnModuleDestroy {
     });
   }
 
-  private async profileLines(tenantId: string, userId: string): Promise<string[]> {
-    const profile = await this.prisma.patientProfile.findUnique({ where: { tenantId_userId: { tenantId, userId } } });
-    if (!profile) return [];
-    const list = (label: string, value: unknown) => {
-      const v = value as { state?: string; items?: string[] } | null;
-      if (v?.state === 'none') return [`${label}: none`];
-      return v?.state === 'known' && v.items?.length ? [`${label}: ${v.items.join(', ')}`] : [];
-    };
-    return [
-      ...(profile.sexAtBirth !== 'UNKNOWN' ? [`Sex at birth: ${profile.sexAtBirth.toLowerCase()}`] : []),
-      ...list('Known conditions', profile.conditions),
-      ...list('Current medicines', profile.medications),
-      ...list('Allergies', profile.allergies),
-    ];
+  /** Medicine names from the approved library plus common long-term conditions; drafts may only name them when grounded. */
+  private async watchTerms(tenantId: string): Promise<string[]> {
+    const medicines = await this.prisma.medicineEntry.findMany({
+      where: { OR: [{ tenantId: null }, { tenantId }] },
+      select: { genericName: true, brandExamples: true },
+    });
+    return [...new Set([...medicines.flatMap((m) => [m.genericName, ...m.brandExamples]), ...CONDITION_TERMS].map((t) => t.toLowerCase()))];
   }
 }
+
+const CONDITION_TERMS = ['diabetes', 'hypertension', 'high blood pressure', 'asthma', 'COPD', 'thyroid', 'hypothyroidism', 'kidney disease', 'heart disease', 'epilepsy', 'cancer', 'HIV', 'tuberculosis'];
 
 function hashFacts(facts: FactMap): string {
   const sorted = Object.keys(facts)

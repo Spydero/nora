@@ -45,7 +45,7 @@ describe.skipIf(!key)('live OpenRouter orchestration', () => {
     const stages: string[] = [];
     const out = await runAssessment(deps(stages), {
       bundle: demoBundle,
-      context: { patientMessage: { id: 'm1', text: "My throat has been really sore for 3 days, I've had a fever around 38.5 and my neck glands feel swollen. No cough." }, profileLines: [], emergency: contacts },
+      context: { patientMessage: { id: 'm1', text: "My throat has been really sore for 3 days, I've had a fever around 38.5 and my neck glands feel swollen. No cough." }, memory: [], emergency: contacts },
       facts: { age: { state: 'PRESENT', value: 29, source: 'profile' } },
       asked: [],
       turnCount: 1,
@@ -64,7 +64,7 @@ describe.skipIf(!key)('live OpenRouter orchestration', () => {
       chest_pain: A, breathless_severe: A, stroke_signs: A, confusion: A, lip_throat_swelling: A,
       sore_throat: P(), duration_days: P(3), fever: P(), temperature_c: P(38.5), cough: A, swollen_glands: P(), difficulty_swallowing: A, runny_nose: A,
     };
-    const out = await runAssessment(deps(stages), { bundle: demoBundle, context: { patientMessage: null, profileLines: [], emergency: contacts }, facts, asked: [], turnCount: 8 });
+    const out = await runAssessment(deps(stages), { bundle: demoBundle, context: { patientMessage: null, memory: [], emergency: contacts }, facts, asked: [], turnCount: 8 });
     const r = out.result!;
     trace('full-run', { stages, generator: r.generator, model: r.model, errors: out.aiErrors, issues: r.verification, ranking: out.ranking, review: out.reviewReasons, summary: r.summary, explanations: r.explanations.map((e) => [e.code, e.likelihood, e.rationale, e.citations]), usage: out.usage });
     expect(out.outcome).toBe('COMPLETED');
@@ -75,7 +75,7 @@ describe.skipIf(!key)('live OpenRouter orchestration', () => {
 
   const message = (id: string, text: string) => ({
     bundle: demoBundle,
-    context: { patientMessage: { id, text }, profileLines: [], emergency: contacts },
+    context: { patientMessage: { id, text }, memory: [], emergency: contacts },
     facts: { age: { state: 'PRESENT' as const, value: 54, source: 'profile' } },
     asked: [],
     turnCount: 1,

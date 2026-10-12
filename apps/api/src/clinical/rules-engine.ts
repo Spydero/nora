@@ -67,8 +67,15 @@ export function evaluate(condition: Condition, facts: FactMap): boolean {
   return true;
 }
 
+/**
+ * Specific concerns win; a general one (fever, a cold) is used only when
+ * nothing specific matches, and then only the first, so a fever with a sore
+ * throat is assessed as a sore throat rather than as two overlapping checks.
+ */
 export function detectConcerns(bundle: BundleContent, facts: FactMap): ConcernDef[] {
-  return bundle.concerns.filter((c) => c.triggers.some((t) => facts[t]?.state === 'PRESENT'));
+  const matched = bundle.concerns.filter((c) => c.triggers.some((t) => facts[t]?.state === 'PRESENT'));
+  const specific = matched.filter((c) => !c.onlyAlone);
+  return specific.length ? specific : matched.slice(0, 1);
 }
 
 export function evaluateUrgency(bundle: BundleContent, facts: FactMap, concerns: ConcernDef[]): UrgencyOutcome {
@@ -122,8 +129,19 @@ function isResolved(q: QuestionDef, facts: FactMap): boolean {
 }
 
 /**
- * Screening (age, red flags) always comes first; then concern questions in
- * bundle order, skipping anything the patient already told us.
+ * The question as the patient should see it: multi-select options the patient
+ * already confirmed or ruled out are dropped, so an answer can only change
+ * facts that are still open.
+ */
+export function presentQuestion(q: QuestionDef, facts: FactMap): QuestionDef {
+  if (q.type !== 'multi') return q;
+  return { ...q, options: (q.options ?? []).filter((o) => !o.factKey || !isKnown(facts[o.factKey])) };
+}
+
+/**
+ * Screening questions apply only while Nora cannot tell what the concern is;
+ * then each concern's own questions, starting with its warning signs, skipping
+ * anything already asked or already told.
  */
 export function nextQuestion(
   bundle: BundleContent,

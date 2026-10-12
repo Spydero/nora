@@ -249,6 +249,57 @@ export interface ContentOverview {
   medicines: { slug: string; genericName: string; reviewedAt: string }[];
 }
 
+export type AnalyticsRange = "7d" | "30d" | "90d";
+
+/** Counts and rates are null when withheld because they are below the minimum count. */
+export interface Analytics {
+  range: AnalyticsRange;
+  since: string;
+  minCount: number;
+  funnel: { started: number | null; completed: number | null; completionRate: number | null; followUps: number | null };
+  outcomes: {
+    assessed: number | null;
+    urgentOrEmergency: number | null;
+    unsupported: number | null;
+    unsupportedRate: number | null;
+    handoffs: number | null;
+    handoffRate: number | null;
+  };
+  urgency: { level: UrgencyLevel; count: number | null }[];
+  safety: { reviewsOpened: number | null; reviewsDecided: number | null; reviewsCorrected: number | null; correctionRate: number | null; medianReviewHours: number | null };
+  ai: { used: number | null; fellBack: number | null; fallbackRate: number | null };
+  reliability: { failedAssessments: number | null };
+}
+
+export interface AiProviderStatus {
+  name: string;
+  label: string;
+  model: string;
+  available: boolean;
+  pausedUntil: string | null;
+  lastError: string | null;
+  lastErrorAt: string | null;
+  lastSuccessAt: string | null;
+}
+
+export interface PlatformHealth {
+  checkedAt: string;
+  database: { ok: boolean; latencyMs: number };
+  redis: { ok: boolean; latencyMs: number | null };
+  queue: { pending: number; running: number; failed24h: number; oldestPendingSeconds: number | null };
+  assessments24h: { total: number; ai: number; template: number; fellBack: number; rules: number; medianMs: number | null; p95Ms: number | null };
+  ai: {
+    configured: boolean;
+    available: boolean;
+    enabled: boolean;
+    active: string | null;
+    pausedUntil: string | null;
+    providers: AiProviderStatus[];
+  };
+  assessmentEnabled: boolean;
+  knowledge: { approved: number; overdue: { title: string; reviewDueAt: string }[]; dueSoon: { title: string; reviewDueAt: string }[] };
+}
+
 const qs = (params: object) => {
   const entries = Object.entries(params).filter(([, v]) => v !== undefined && v !== "");
   return entries.length ? `?${new URLSearchParams(entries as [string, string][]).toString()}` : "";
@@ -295,6 +346,9 @@ export const careApi = {
   adminProviders: () => api<AdminProvider[]>("/admin/providers"),
   setProviderStatus: (id: string, status: "PUBLISHED" | "VERIFIED" | "SUSPENDED") => api<AdminProvider[]>(`/admin/providers/${id}`, { method: "PATCH", body: { status } }),
 
+  analytics: (range: AnalyticsRange) => api<Analytics>(`/admin/analytics?range=${range}`),
+
+  platformHealth: () => api<PlatformHealth>("/platform/health"),
   platformFlags: () => api<PlatformFlag[]>("/platform/flags"),
   setPlatformFlag: (key: string, enabled: boolean, reason?: string) => api<PlatformFlag[]>(`/platform/flags/${key}`, { method: "PUT", body: { enabled, reason } }),
 

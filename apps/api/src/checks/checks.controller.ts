@@ -7,7 +7,8 @@ import { ChecksService } from './checks.service.js';
 
 const idempotencyKey = z.string().min(8).max(100);
 
-const createSchema = z.object({ idempotencyKey });
+const createSchema = z.object({ idempotencyKey, parentId: z.uuid().optional() });
+const ackSchema = z.object({ done: z.boolean() });
 const messageSchema = z.object({
   text: z.string().trim().min(1, 'Describe what you are experiencing').max(2000, 'Please keep this under 2000 characters'),
   idempotencyKey,
@@ -26,7 +27,17 @@ export class ChecksController {
 
   @Post()
   create(@CurrentPrincipal() principal: AuthPrincipal, @Body(new ZodValidationPipe(createSchema)) body: z.infer<typeof createSchema>) {
-    return this.checks.create(principal, body.idempotencyKey);
+    return this.checks.create(principal, body.idempotencyKey, body.parentId);
+  }
+
+  @Post(':id/care-plan/:itemId')
+  acknowledge(
+    @CurrentPrincipal() principal: AuthPrincipal,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Param('itemId') itemId: string,
+    @Body(new ZodValidationPipe(ackSchema)) body: z.infer<typeof ackSchema>,
+  ) {
+    return this.checks.acknowledge(principal, id, itemId.slice(0, 100), body.done);
   }
 
   @Get()

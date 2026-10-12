@@ -82,6 +82,8 @@ const concernSchema = z.object({
   code: z.string(),
   label: z.string(),
   triggers: z.array(z.string()).min(1),
+  /** General presentations (fever, a cold) that only apply when no more specific concern matches. */
+  onlyAlone: z.boolean().default(false),
   specialty: z.string(),
   defaultLevel: z.enum(URGENCY_LEVELS),
   questions: z.array(z.string()),
@@ -132,6 +134,8 @@ export const bundleContentSchema = z
       disclaimer: z.string(),
       ageMin: z.number().int(),
       maxTurns: z.number().int().positive(),
+      /** A finished check for the same concern within this many days sets the `recurrent` fact. */
+      recurrenceDays: z.number().int().positive().default(30),
     }),
     facts: z.record(z.string(), factSchema),
     concerns: z.array(concernSchema).min(1),
@@ -162,7 +166,12 @@ export const bundleContentSchema = z
       if (q.askIf) walk(q.askIf, `question ${id}`);
     }
     for (const id of content.screeningQuestions) if (!questions.has(id)) issue(`screening question ${id} missing`);
+    const explanationCodes = new Set<string>();
     for (const concern of content.concerns) {
+      for (const e of concern.explanations) {
+        if (explanationCodes.has(e.code)) issue(`explanation code ${e.code} is used by more than one concern`);
+        explanationCodes.add(e.code);
+      }
       concern.triggers.forEach((f) => !facts.has(f) && issue(`concern ${concern.code} trigger ${f} unknown`));
       concern.questions.forEach((q) => !questions.has(q) && issue(`concern ${concern.code} question ${q} missing`));
       concern.requiredFacts.forEach((f) => !facts.has(f) && issue(`concern ${concern.code} required fact ${f} unknown`));

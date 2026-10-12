@@ -56,4 +56,6 @@ export interface ResultContent {
   generator: Generator;
   model: string | null;
   verification: { passed: boolean; attempts: number; issues: string[] };
+  /** Confirmed records Nora took into account; `used` marks items the explanation relied on. Absent on results saved before memory existed. */
+  memory?: { id: string; kind: string; label: string; text: string; href: string; checkId?: string; used: boolean }[];
 }

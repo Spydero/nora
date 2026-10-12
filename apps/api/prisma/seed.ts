@@ -119,7 +119,7 @@ async function seedBundle(tenantId: string, authorId: string, approverId: string
         version: DEMO_BUNDLE_VERSION,
         status: 'RELEASED',
         content: demoBundle as object,
-        changeNote: 'Initial synthetic demo bundle',
+        changeNote: 'Concern-specific warning signs; adds fever, cold/flu, diarrhoea and vomiting, skin rash, ear pain and dizziness',
         authorId,
         approverId,
         approvedAt: new Date(),
@@ -137,7 +137,10 @@ async function seedKnowledge() {
   const reviewDue = new Date(now.getTime() + 365 * 86_400_000);
   for (const doc of demoKnowledge) {
     const exists = await prisma.knowledgeDocument.findFirst({ where: { tenantId: null, sourceKey: doc.sourceKey, version: 1 } });
-    if (exists) continue;
+    if (exists) {
+      await prisma.knowledgeDocument.update({ where: { id: exists.id }, data: { concernCodes: doc.concernCodes } });
+      continue;
+    }
     await prisma.knowledgeDocument.create({
       data: {
         sourceKey: doc.sourceKey,

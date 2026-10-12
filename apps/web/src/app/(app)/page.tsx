@@ -77,6 +77,7 @@ export default function WorkspacePage() {
       <div className="grid min-h-0 flex-1 gap-4 md:grid-cols-[28fr_44fr] xl:grid-cols-[28fr_44fr_28fr]">
         <IntakePanel
           controller={controller}
+          emergency={emergency}
           className={cn(view !== "intake" && "max-md:hidden")}
           onShowFindings={() => {
             setView("findings");
@@ -84,7 +85,7 @@ export default function WorkspacePage() {
           }}
         />
         <FindingsPanel check={check} className={cn(view !== "findings" && "max-md:hidden")} />
-        <NextStepsPanel check={check} emergency={emergency} className={view === "next" ? "md:max-xl:hidden" : "max-xl:hidden"} />
+        <NextStepsPanel controller={controller} className={view === "next" ? "md:max-xl:hidden" : "max-xl:hidden"} />
       </div>
 
       {drawerOpen && (
@@ -101,7 +102,7 @@ export default function WorkspacePage() {
                 Close
               </Button>
             </div>
-            <NextStepsPanel check={check} emergency={emergency} className="flex-1" />
+            <NextStepsPanel controller={controller} className="flex-1" />
           </div>
         </div>
       )}

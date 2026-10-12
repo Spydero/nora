@@ -48,6 +48,7 @@ export interface CheckResult {
     code: string;
     label: string;
     plain: string;
+    clinical: string;
     likelihood: "more_likely" | "possible" | "less_likely";
     rationale: string;
     citations: string[];
@@ -62,6 +63,20 @@ export interface CheckResult {
   generator: "llm" | "template" | "template_fallback" | "rules";
   model: string | null;
   createdAt: string;
+  memory?: { id: string; kind: MemoryKind; label: string; text: string; href: string; checkId?: string; used: boolean }[];
+}
+
+export type MemoryKind = "about" | "condition" | "medicine" | "allergy" | "past_check" | "appointment";
+
+export interface MemoryItem {
+  id: string;
+  kind: MemoryKind;
+  label: string;
+  text: string;
+  recordedAt: string | null;
+  href: string;
+  checkId?: string;
+  urgency?: UrgencyLevel | null;
 }
 
 export interface CheckMessage {
@@ -93,6 +108,8 @@ export interface CheckView {
     patientNote: string | null;
     reviewedAt: string | null;
   } | null;
+  carePlanDone: string[];
+  parent: { id: string; title: string | null; createdAt: string; urgency: UrgencyLevel | null; urgencyTitle: string | null; summary: string | null } | null;
 }
 
 export interface CheckEvent {
@@ -114,8 +131,10 @@ export interface ConsentNotice {
 const key = () => crypto.randomUUID();
 
 export const checksApi = {
-  create: () => api<CheckView>("/checks", { method: "POST", body: { idempotencyKey: key() } }),
+  create: (parentId?: string) => api<CheckView>("/checks", { method: "POST", body: { idempotencyKey: key(), ...(parentId ? { parentId } : {}) } }),
   get: (id: string) => api<CheckView>(`/checks/${id}`),
+  acknowledge: (id: string, itemId: string, done: boolean) => api<CheckView>(`/checks/${id}/care-plan/${encodeURIComponent(itemId)}`, { method: "POST", body: { done } }),
+  memory: () => api<{ items: MemoryItem[] }>("/memory"),
   send: (id: string, text: string) => api<CheckView>(`/checks/${id}/messages`, { method: "POST", body: { text, idempotencyKey: key() } }),
   answer: (id: string, questionId: string, inputVersion: number, value: AnswerValue) =>
     api<CheckView>(`/checks/${id}/answers`, { method: "POST", body: { questionId, inputVersion, value } }),

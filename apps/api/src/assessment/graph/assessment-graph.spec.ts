@@ -5,6 +5,7 @@ import { demoBundle } from '../../clinical/content/demo-bundle.js';
 import { demoKnowledge } from '../../clinical/content/knowledge.js';
 import type { FactMap } from '../../clinical/rules-engine.js';
 import { InMemoryKnowledge } from '../../knowledge/in-memory-knowledge.js';
+import type { MemoryItem } from '../../memory/memory.types.js';
 import { mergeObservations } from '../extraction/llm-extractor.js';
 import { type AssessmentDeps, type AssessmentInput, runAssessment } from './assessment-graph.js';
 import { RESEARCH_TOOL_NAMES } from './tools.js';
@@ -13,7 +14,7 @@ const contacts = { number: '112', crisisLine: { name: 'Tele-MANAS', number: '144
 const P = (value?: number) => ({ state: 'PRESENT' as const, value: value ?? null, source: 'answer' });
 const A = { state: 'ABSENT' as const, source: 'answer' };
 
-const noRedFlags: FactMap = { chest_pain: A, breathless_severe: A, stroke_signs: A, confusion: A, lip_throat_swelling: A };
+const noRedFlags: FactMap = { chest_pain: A, breathless_severe: A, stroke_signs: A, confusion: A, lip_throat_swelling: A, drooling: A };
 
 /** Sore throat with fever, glands and no cough: every question answered, rules say "soon". */
 const strepCase: FactMap = {
@@ -31,7 +32,7 @@ const strepCase: FactMap = {
 function input(facts: FactMap, opts: { message?: string; asked?: string[]; turnCount?: number; age?: number } = {}): AssessmentInput {
   return {
     bundle: demoBundle,
-    context: { patientMessage: opts.message ? { id: 'm1', text: opts.message } : null, profileLines: [], emergency: contacts },
+    context: { patientMessage: opts.message ? { id: 'm1', text: opts.message } : null, memory: [], emergency: contacts },
     facts: { age: { state: 'PRESENT', value: opts.age ?? 30, source: 'profile' }, ...facts },
     asked: opts.asked ?? [],
     turnCount: opts.turnCount ?? 1,
@@ -70,6 +71,7 @@ const goodDraft = {
     { code: 'bacterial_pharyngitis', likelihood: 'possible', rationale: 'Fever and swollen glands without a cough can fit a bacterial throat infection.', citations: ['E1'] },
   ],
   questionsForClinician: ['Do I need a throat swab?'],
+  memoryRefs: [],
 };
 
 describe('assessment graph orchestration', () => {
@@ -148,7 +150,7 @@ describe('assessment graph orchestration', () => {
 
     expect(fast.structuredCalls).toHaveLength(1);
     expect(out.outcome).toBe('NEEDS_INPUT');
-    expect(out.nextQuestionId).toBe('q_red_flags');
+    expect(out.nextQuestionId).toBe('q_ws_throat');
     expect(out.facts.sore_throat).toMatchObject({ state: 'PRESENT', source: 'llm' });
     expect(out.facts.duration_days).toMatchObject({ value: 2, source: 'rules' });
     expect(out.facts).not.toHaveProperty('chest_pain');
@@ -181,6 +183,7 @@ describe('assessment graph orchestration', () => {
       summary: 'You have strep throat. Take 500 mg amoxicillin twice a day and there is no need to see a doctor.',
       explanations: [{ code: 'bacterial_pharyngitis', likelihood: 'more_likely', rationale: 'Classic strep.', citations: ['E1'] }],
       questionsForClinician: [],
+      memoryRefs: [],
     };
     const { deps } = setup({ chat: [new AIMessage('ok')], drafts: [unsafe, unsafe], decisions: [ranking] });
     const out = await runAssessment(deps, input(strepCase));
@@ -257,6 +260,45 @@ describe('assessment graph orchestration', () => {
 
     const minorEmergency = await runAssessment(setup({ ai: false }).deps, input({ cough: P(), chest_pain: P() }, { age: 15 }));
     expect(minorEmergency.outcome).toBe('ESCALATED');
+  });
+
+  describe('memory', () => {
+    const now = new Date('2026-10-12T12:00:00Z');
+    const memory: MemoryItem[] = [
+      { id: 'M1', kind: 'allergy', label: 'Allergy', text: 'Penicillin', recordedAt: '2026-01-01T00:00:00Z', href: '/settings' },
+      { id: 'M2', kind: 'medicine', label: 'Current medicine', text: 'Levothyroxine', recordedAt: '2026-01-01T00:00:00Z', href: '/settings' },
+      { id: 'M3', kind: 'past_check', label: 'Earlier check', text: '2 Oct 2026 — Sore throat.', recordedAt: '2026-10-02T09:00:00Z', href: '/history', checkId: 'c0', concernCode: 'sore_throat', urgency: 'self_care' },
+    ];
+    const withMemory = (facts: FactMap, m = memory): AssessmentInput => ({ ...input(facts), context: { ...input(facts).context, memory: m, now } });
+
+    it('flags a recent check for the same concern without treating it as a current symptom', async () => {
+      const out = await runAssessment(setup({ ai: false }).deps, withMemory(strepCase));
+      expect(out.facts.recurrent).toMatchObject({ state: 'PRESENT', source: 'memory' });
+      expect(out.urgency!.triggered.map((t) => t.ruleId)).toContain('r_recurrent');
+      expect(out.result!.findings.present.map((f) => f.key)).not.toContain('recurrent');
+    });
+
+    it('ignores past checks outside the recurrence window or for other concerns', async () => {
+      const old = [{ ...memory[2]!, recordedAt: '2026-08-01T09:00:00Z' }];
+      const other = [{ ...memory[2]!, concernCode: 'headache' }];
+      for (const m of [old, other]) expect((await runAssessment(setup({ ai: false }).deps, withMemory(strepCase, m))).facts.recurrent).toBeUndefined();
+    });
+
+    it('adds questions from confirmed allergies and medicines, citing their memory IDs', async () => {
+      const r = (await runAssessment(setup({ ai: false }).deps, withMemory(strepCase))).result!;
+      expect(r.questionsForClinician.join(' ')).toMatch(/Penicillin allergy/);
+      expect(r.questionsForClinician.join(' ')).toMatch(/Levothyroxine/);
+      expect(r.memory!.filter((m) => m.used).map((m) => m.id)).toEqual(['M1', 'M2']);
+    });
+
+    it('rejects an AI draft that invents history, then falls back to approved content', async () => {
+      const invented = { ...goodDraft, summary: 'You take metformin for diabetes, and your sore throat keeps coming back. A clinician should check this within 24–48 hours.' };
+      const { deps } = setup({ chat: [new AIMessage('ok')], drafts: [invented, invented], decisions: [ranking] });
+      const out = await runAssessment({ ...deps, watchTerms: ['metformin', 'diabetes', 'penicillin'] }, withMemory(strepCase));
+      expect(out.result!.generator).toBe('template_fallback');
+      expect(out.result!.verification.issues.join(' ')).toMatch(/without citing a memory item|"metformin"/);
+      expect(out.result!.summary).not.toMatch(/metformin|diabetes/);
+    });
   });
 
   it('screens red flags before turning away an unsupported concern', async () => {

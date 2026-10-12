@@ -8,6 +8,7 @@ import {
   type FactMap,
   missingRequiredFacts,
   nextQuestion,
+  presentQuestion,
   runSentinels,
 } from './rules-engine.js';
 
@@ -94,24 +95,61 @@ describe('scope', () => {
   });
 });
 
+describe('concern detection', () => {
+  it('prefers a specific concern over a general one', () => {
+    const facts: FactMap = { sore_throat: { state: 'PRESENT' }, fever: { state: 'PRESENT' }, runny_nose: { state: 'PRESENT' } };
+    expect(detectConcerns(demoBundle, facts).map((c) => c.code)).toEqual(['sore_throat']);
+  });
+
+  it('uses a single general concern when nothing specific matches', () => {
+    expect(detectConcerns(demoBundle, { fever: { state: 'PRESENT' } }).map((c) => c.code)).toEqual(['fever']);
+    expect(detectConcerns(demoBundle, { fever: { state: 'PRESENT' }, runny_nose: { state: 'PRESENT' } }).map((c) => c.code)).toEqual(['cold_flu']);
+  });
+});
+
 describe('question selection', () => {
-  it('asks age first when unknown, then red flags, then concern questions', () => {
+  it('asks age when unknown, then the concern’s own warning signs — not a generic screen', () => {
     const facts: FactMap = { sore_throat: { state: 'PRESENT' } };
     const concerns = detectConcerns(demoBundle, facts);
     expect(nextQuestion(demoBundle, facts, concerns, new Set())?.id).toBe('q_age');
-    expect(nextQuestion(demoBundle, { ...facts, ...adult }, concerns, new Set())?.id).toBe('q_red_flags');
-    expect(nextQuestion(demoBundle, { ...facts, ...adult }, concerns, new Set(['q_red_flags']))?.id).toBe('q_duration');
+    expect(nextQuestion(demoBundle, { ...facts, ...adult }, concerns, new Set())?.id).toBe('q_ws_throat');
+    expect(nextQuestion(demoBundle, { ...facts, ...adult }, concerns, new Set(['q_ws_throat']))?.id).toBe('q_duration');
+  });
+
+  it('gives each concern different first questions', () => {
+    const first = (fact: string) => {
+      const facts: FactMap = { ...adult, [fact]: { state: 'PRESENT' } };
+      return nextQuestion(demoBundle, facts, detectConcerns(demoBundle, facts), new Set())?.id;
+    };
+    const ids = ['sore_throat', 'headache', 'cough', 'rash', 'ear_pain', 'dizziness', 'fever', 'diarrhoea', 'runny_nose', 'back_pain', 'abdominal_pain', 'dysuria'].map(first);
+    expect(new Set(ids).size).toBe(ids.length);
+    expect(ids).not.toContain('q_red_flags');
+  });
+
+  it('asks what the concern is, then the generic screen, only when no concern is recognised', () => {
+    expect(nextQuestion(demoBundle, adult, [], new Set())?.id).toBe('q_main_concern');
+    expect(nextQuestion(demoBundle, adult, [], new Set(['q_main_concern']))?.id).toBe('q_red_flags');
+    expect(nextQuestion(demoBundle, adult, [], new Set(['q_main_concern', 'q_red_flags']))).toBeNull();
+  });
+
+  it('hides warning signs the patient already ruled in or out, and skips the question when none are left', () => {
+    const facts: FactMap = { ...adult, cough: { state: 'PRESENT' }, chest_pain: { state: 'ABSENT' } };
+    const q = nextQuestion(demoBundle, facts, detectConcerns(demoBundle, facts), new Set());
+    expect(q?.id).toBe('q_ws_cough');
+    expect(presentQuestion(q!.question, facts).options?.map((o) => o.value)).toEqual(['breathless_severe', 'breathless', 'cough_blood', 'none']);
+    const allKnown: FactMap = { ...facts, breathless_severe: { state: 'ABSENT' }, breathless: { state: 'ABSENT' }, cough_blood: { state: 'ABSENT' } };
+    expect(nextQuestion(demoBundle, allKnown, detectConcerns(demoBundle, allKnown), new Set())?.id).toBe('q_duration');
   });
 
   it('does not re-ask facts the patient already volunteered', () => {
     const facts: FactMap = { ...adult, sore_throat: { state: 'PRESENT' }, duration_days: { state: 'PRESENT', value: 2 }, fever: { state: 'ABSENT' } };
-    const q = nextQuestion(demoBundle, facts, detectConcerns(demoBundle, facts), new Set(['q_red_flags']));
+    const q = nextQuestion(demoBundle, facts, detectConcerns(demoBundle, facts), new Set(['q_ws_throat']));
     expect(q?.id).toBe('q_cough');
   });
 
   it('asks conditional follow-ups only when their condition holds', () => {
     const base: FactMap = { ...adult, sore_throat: { state: 'PRESENT' }, duration_days: { state: 'PRESENT', value: 2 }, cough: { state: 'ABSENT' }, swollen_glands: { state: 'ABSENT' }, difficulty_swallowing: { state: 'ABSENT' } };
-    const asked = new Set(['q_red_flags']);
+    const asked = new Set(['q_ws_throat']);
     const noFever = nextQuestion(demoBundle, { ...base, fever: { state: 'ABSENT' } }, detectConcerns(demoBundle, base), asked);
     expect(noFever?.id).toBe('q_runny_nose');
     const fever = nextQuestion(demoBundle, { ...base, fever: { state: 'PRESENT' } }, detectConcerns(demoBundle, base), asked);

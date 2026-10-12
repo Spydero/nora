@@ -1,16 +1,26 @@
 "use client";
 
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
-import { ClipboardList, FileSearch, Loader2, Plus, Send, ShieldCheck } from "lucide-react";
+import { ClipboardList, FileSearch, Loader2, Phone, Plus, RefreshCw, Send, ShieldCheck } from "lucide-react";
 import { Alert, Button, cn, NoraMark, Panel } from "@nora/ui";
-import { TERMINAL } from "@/lib/checks";
+import { type EmergencyContacts, TERMINAL } from "@/lib/checks";
 import type { CheckController } from "@/lib/use-check";
 import { QuestionInput } from "./question-input";
 
 const MAX_CHARS = 2000;
 
-export function IntakePanel({ controller, className, onShowFindings }: { controller: CheckController; className?: string; onShowFindings(): void }) {
-  const { check, stage, error, busy, consent } = controller;
+export function IntakePanel({
+  controller,
+  emergency: contacts,
+  className,
+  onShowFindings,
+}: {
+  controller: CheckController;
+  emergency: EmergencyContacts;
+  className?: string;
+  onShowFindings(): void;
+}) {
+  const { check, stage, error, busy, consent, followUp } = controller;
   const assessing = check?.status === "ASSESSING" || (busy && !consent);
   const finished = check ? TERMINAL.includes(check.status) : false;
   const end = useRef<HTMLDivElement>(null);
@@ -27,11 +37,41 @@ export function IntakePanel({ controller, className, onShowFindings }: { control
     <Panel title="Intake" titleId="intake-title" className={className}>
       <div className="flex min-h-full flex-col gap-3">
         {!check && !consent && (
-          <EmptyState
-            icon={<ClipboardList aria-hidden className="size-6" />}
-            title="Start a check"
-            body='Describe your main symptom in your own words, for example: "Sore throat and fever since yesterday."'
-          />
+          <>
+            {followUp ? (
+              <EmptyState
+                icon={<RefreshCw aria-hidden className="size-6" />}
+                title={`Follow-up: ${followUp.title ?? "earlier check"}`}
+                body="Tell Nora how things are now: what has changed, what is better or worse, and anything new."
+              />
+            ) : (
+              <EmptyState
+                icon={<ClipboardList aria-hidden className="size-6" />}
+                title="Start a check"
+                body='Describe your main symptom in your own words, for example: "Sore throat and fever since yesterday."'
+              />
+            )}
+            <p className="flex items-start gap-2 text-meta text-fg-muted">
+              <Phone aria-hidden className="mt-0.5 size-3.5 shrink-0 text-danger" />
+              <span>
+                Severe chest pain, trouble breathing or signs of a stroke? Call{" "}
+                <a href={`tel:${contacts.number}`} className="font-semibold text-danger underline-offset-2 hover:underline">
+                  {contacts.number}
+                </a>{" "}
+                now, don’t wait for Nora.
+                {contacts.crisisLine && (
+                  <>
+                    {" "}
+                    If you are thinking about harming yourself, call {contacts.crisisLine.name} on{" "}
+                    <a href={`tel:${contacts.crisisLine.number}`} className="font-semibold underline-offset-2 hover:underline">
+                      {contacts.crisisLine.number}
+                    </a>
+                    .
+                  </>
+                )}
+              </span>
+            </p>
+          </>
         )}
 
         {check && (

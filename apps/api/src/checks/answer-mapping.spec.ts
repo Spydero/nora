@@ -1,4 +1,5 @@
 import { demoBundle } from '../clinical/content/demo-bundle.js';
+import { presentQuestion } from '../clinical/rules-engine.js';
 import { InvalidAnswerError, mapAnswer } from './answer-mapping.js';
 
 const q = (id: string) => demoBundle.questions[id]!;
@@ -33,6 +34,14 @@ describe('answer mapping', () => {
     expect(chest.facts.chest_pain?.state).toBe('PRESENT');
     expect(chest.facts.stroke_signs?.state).toBe('ABSENT');
     expect(() => mapAnswer(q('q_red_flags'), ['none', 'chest_pain'])).toThrow(InvalidAnswerError);
+  });
+
+  it('only answers the warning signs that were shown', () => {
+    const shown = presentQuestion(q('q_ws_cough'), { breathless: { state: 'PRESENT', source: 'llm' } });
+    expect(() => mapAnswer(shown, ['breathless'])).toThrow(InvalidAnswerError);
+    const none = mapAnswer(shown, ['none']);
+    expect(none.facts).not.toHaveProperty('breathless');
+    expect(none.facts.cough_blood?.state).toBe('ABSENT');
   });
 
   it('leaves unticked concerns unasked on the main-concern question', () => {

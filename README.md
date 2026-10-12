@@ -30,6 +30,8 @@
 | **Bounded explanations** | The model may only rank *approved candidate explanations* from the active bundle; it cannot invent diagnoses. |
 | **Every claim is cited** | A read-only research agent retrieves approved passages; drafts are verified so each explanation cites retrieved evidence IDs. |
 | **Verify, retry, fall back** | Drafts with uncited claims, diagnosis or dosing language are rejected and retried, then replaced by approved template content. |
+| **Memory without guesswork** | Nora remembers only what the patient confirmed: profile conditions, medicines and allergies, past checks and upcoming appointments. Memory is built deterministically and given to the model as numbered facts; the verifier rejects any history claim that doesn't cite one. |
+| **Survives provider outages** | OpenRouter is primary and Google Gemini takes over automatically on rate limits, quota exhaustion or outages. If every provider fails, patients get approved template guidance and urgency is unaffected. |
 | **Defence in depth** | A deterministic red-flag extractor always runs beside the LLM extractor; a critical finding it sees can never be dropped by the model. |
 | **Tenant isolation & privacy** | Tenant-scoped data access, append-only consent, audit trails, idle timeouts, rotating refresh tokens and CSRF protection. |
 
@@ -51,6 +53,21 @@
   <tr>
     <td><img src="docs/screenshots/19-consent-before-first-check.png" alt="Consent notice shown before the first check" /></td>
     <td><img src="docs/screenshots/07-tablet-next-steps-drawer.png" alt="Tablet layout with the next steps drawer" /></td>
+  </tr>
+</table>
+
+### Memory, follow-ups and care plans
+
+<table>
+  <tr>
+    <td width="33%"><img src="docs/screenshots/33-next-steps-memory.png" alt="Next steps panel showing what Nora remembers from confirmed records and recent checks" /></td>
+    <td width="33%"><img src="docs/screenshots/36-follow-up-check.png" alt="Follow-up check linked to the earlier sore-throat check, escalated because symptoms worsened" /></td>
+    <td width="33%"><img src="docs/screenshots/35-care-plan-checklist.png" alt="Care plan checklist with one item ticked off" /></td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/34-findings-medical-terms.png" alt="Possible explanations switched to medical terms" /></td>
+    <td><img src="docs/screenshots/37-platform-health.png" alt="Platform health with OpenRouter primary and Gemini fallback status" /></td>
+    <td></td>
   </tr>
 </table>
 
@@ -108,10 +125,13 @@ flowchart LR
     P[(Postgres 17<br/>+ pgvector)]
     RD[(Redis 7)]
   end
-  subgraph OpenRouter
+  subgraph OpenRouter["OpenRouter (primary)"]
     N[Nemotron 3.5 Lightning<br/>reasoning · tools]
     D[Mercury Decide<br/>calibrated decisions]
     E[Nemotron Embed VL<br/>embeddings]
+  end
+  subgraph Gemini["Google Gemini (fallback)"]
+    GM[Gemini Flash-Lite<br/>reasoning · tools]
   end
   W -- "/api proxy · cookies" --> A
   W --> C
@@ -119,6 +139,7 @@ flowchart LR
   G --> R
   G --> N
   G --> D
+  G -. "rate limit · quota · outage" .-> GM
   G -- retrieval --> P
   E -. index .-> P
   A --> P
@@ -164,7 +185,9 @@ Research tools are **read-only**: `search_knowledge`, `get_case_summary`, `get_s
 │   │       ├── auth/        JWT access + opaque rotating refresh, CSRF, roles
 │   │       ├── clinical/    bundle schema, rules engine, synthetic content
 │   │       ├── assessment/  extraction, graph, tools, verification
-│   │       ├── ai/          OpenRouter model factory, scripted test model
+│   │       ├── ai/          OpenRouter + Gemini model factories, provider failover, scripted test model
+│   │       ├── memory/      grounded patient memory from confirmed records
+│   │       ├── admin/       tenant admin, analytics, platform health
 │   │       └── knowledge/   retrieval port (full-text + vector)
 │   └── web/                 Next.js 16 app (App Router, cacheComponents)
 ├── packages/
@@ -181,7 +204,7 @@ Research tools are **read-only**: `search_knowledge`, `get_case_summary`, `get_s
 
 ```bash
 pnpm install
-cp .env.example .env                       # add OPENROUTER_API_KEY to enable AI
+cp .env.example .env                       # add OPENROUTER_API_KEY and/or GEMINI_API_KEY to enable AI
 cp apps/api/.env.example apps/api/.env     # then set JWT_ACCESS_SECRET (openssl rand -base64 48)
 
 pnpm infra:up                              # Postgres (5433) + Redis (6379)
@@ -201,14 +224,14 @@ Every seeded account uses the password **`NoraDemo!2026`** and organisation code
 | `priya@demo.nora.local` | Patient | Fresh account — exercises onboarding and consent |
 | `clinician@demo.nora.local` | Clinician | Review queue: pick up a flagged check, agree or change the urgency, message the patient |
 | `coordinator@demo.nora.local` | Care coordinator | Read-only view of the review queue and cases |
-| `admin@demo.nora.local` | Tenant admin | Feature switches, members, doctor listings, audit log |
+| `admin@demo.nora.local` | Tenant admin | Analytics (7/30/90 days), feature switches, members, doctor listings, audit log |
 | `editor@demo.nora.local` / `approver@demo.nora.local` | Content editor / approver | Clinical bundle, sources and medicine library status |
-| `operator@nora.local` | Platform operator | Kill switches across all organisations (sign in with `demo`) |
+| `operator@nora.local` | Platform operator | System and AI provider health, kill switches across all organisations (sign in with `demo`) |
 | `*@acme.nora.local` | Second tenant | Isolation testing |
 
 ## AI configuration
 
-Nora talks to models through [OpenRouter](https://openrouter.ai). Without `OPENROUTER_API_KEY` it runs in **template mode**: rules, questions, care plans and evidence still work, and results are clearly labelled.
+Nora talks to models through [OpenRouter](https://openrouter.ai) first and falls back to [Google Gemini](https://ai.google.dev) through its OpenAI-compatible endpoint. Set either key, or both. With no key it runs in **template mode**: rules, questions, care plans and evidence still work, and results are clearly labelled.
 
 | Variable | Default | Role |
 | --- | --- | --- |
@@ -216,6 +239,19 @@ Nora talks to models through [OpenRouter](https://openrouter.ai). Without `OPENR
 | `OPENROUTER_FAST_MODEL` | `nvidia/nemotron-3.5-lightning:free` | Structured symptom extraction |
 | `OPENROUTER_DECISION_MODEL` | `inception/mercury-decide:free` | Calibrated ranking of approved candidates and an urgency cross-check (can escalate to review, never lowers urgency) |
 | `OPENROUTER_EMBEDDING_MODEL` | `nvidia/llama-nemotron-embed-vl-1b-v2:free` | Knowledge embeddings (pgvector) |
+| `GEMINI_API_KEY` | — | Enables the Gemini fallback |
+| `GEMINI_MODEL` | `gemini-3.5-flash-lite` | Fallback research agent and drafting |
+| `GEMINI_FAST_MODEL` | `gemini-3.1-flash-lite` | Fallback symptom extraction |
+
+**Failover.** When a provider returns a rate limit, quota or server error, or times out, the assessment is rerun on the next provider and the failing one is paused, so later checks skip it:
+
+- When the provider gives a retry delay, it is paused for that long.
+- When a daily quota runs out, it is paused until the quota resets: midnight UTC for OpenRouter, midnight Pacific time for Gemini.
+- For other rate limits, it is paused for two minutes.
+
+Gemini has no decision model, so explanations are ranked by the rules instead. Pause state lives in memory and resets when the API restarts. Operators can see each provider's status on the **Platform operations** page.
+
+**Memory.** Before research, Nora builds a numbered list of facts (M1…Mn) from the patient's confirmed profile, recent checks and upcoming appointments. The model may reference these facts but never writes memory. Any claim about the patient's history that doesn't cite a fact is rejected by the verifier. A recent similar check triggers a deterministic recurrence rule.
 
 ## Testing
 
@@ -252,8 +288,10 @@ Tokens, typography, layout and accessibility rules live in [`packages/brand`](pa
 - [x] Doctor directory with booking handoff, appointment tracker, medicine education library
 - [x] Clinician review queue with sign-off, consent-aware sharing and patient-visible corrections
 - [x] Tenant admin (feature switches, members, doctor listings, audit log), platform kill switches, content overview
+- [x] Grounded patient memory, linked follow-up checks, care-plan checklist, plain/medical terms toggle
+- [x] OpenRouter → Gemini failover with quota-aware pausing; platform health for operators
+- [x] Tenant analytics with 7/30/90-day ranges; counts under 5, and any figure that would reveal one, are withheld
 - [ ] Server-sent events with `Last-Event-ID` resume; embedding index and vector search
-- [ ] Product analytics events and dashboards
 
 **P1** — voice input, report upload, live scheduling, notifications, clinician-signed guidance, more languages.
 **P2** — personalised medicine guidance, EHR/FHIR integration, payments.

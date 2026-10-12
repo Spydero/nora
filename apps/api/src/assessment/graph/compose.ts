@@ -1,5 +1,6 @@
 import type { BundleContent, ConcernDef, UrgencyLevel } from '../../clinical/bundle.schema.js';
 import type { FactMap, TriggeredRule, UrgencyOutcome } from '../../clinical/rules-engine.js';
+import { type MemoryItem, memoryLine } from '../../memory/memory.types.js';
 import type { FindingItem, Generator, ResultContent, ResultStatus } from '../result.types.js';
 import type { EvidenceRegistry } from './evidence-registry.js';
 import type { Draft } from './verify.js';
@@ -21,11 +22,12 @@ export function concernDefs(bundle: BundleContent, codes: string[]): ConcernDef[
   return bundle.concerns.filter((c) => codes.includes(c.code));
 }
 
+/** Findings are what the patient told Nora in this check; facts derived from memory are reported separately. */
 export function findings(bundle: BundleContent, facts: FactMap): ResultContent['findings'] {
   const out: ResultContent['findings'] = { present: [], absent: [], unknown: [] };
   for (const [key, f] of Object.entries(facts)) {
     const def = bundle.facts[key];
-    if (!def || key === 'age') continue;
+    if (!def || key === 'age' || f.source === 'memory') continue;
     const item: FindingItem = { key, label: def.label, source: f.source ?? 'unknown', ...(def.type === 'number' ? { value: f.value ?? null, unit: def.unit } : {}) };
     if (f.state === 'PRESENT') out.present.push(item);
     else if (f.state === 'ABSENT') out.absent.push(item);
@@ -34,7 +36,7 @@ export function findings(bundle: BundleContent, facts: FactMap): ResultContent['
   return out;
 }
 
-export function caseSummary(bundle: BundleContent, facts: FactMap, concerns: string[], urgency: UrgencyOutcome | null, profile: string[]) {
+export function caseSummary(bundle: BundleContent, facts: FactMap, concerns: string[], urgency: UrgencyOutcome | null, memory: MemoryItem[]) {
   const f = findings(bundle, facts);
   const fmt = (i: FindingItem) => (i.value !== undefined && i.value !== null ? `${i.label}: ${i.value}${i.unit ? ` ${i.unit}` : ''}` : i.label);
   return {
@@ -44,7 +46,27 @@ export function caseSummary(bundle: BundleContent, facts: FactMap, concerns: str
     absent: f.absent.map(fmt),
     unknown: f.unknown.map(fmt),
     urgency: urgency ? { level: urgency.level, reasons: urgency.triggered.map((t) => t.message), final: true } : null,
-    profile,
+    memory: memory.map(memoryLine),
+  };
+}
+
+/** A finished check for one of the current concerns within the bundle's recurrence window. */
+export function recurrence(bundle: BundleContent, concerns: string[], memory: MemoryItem[], now: Date): MemoryItem | null {
+  const since = now.getTime() - bundle.meta.recurrenceDays * 86_400_000;
+  return memory.find((m) => m.kind === 'past_check' && !!m.concernCode && concerns.includes(m.concernCode) && Date.parse(m.recordedAt ?? '') >= since) ?? null;
+}
+
+/**
+ * Questions a patient should raise, built only from their confirmed records,
+ * so they need no model and cannot invent history.
+ */
+export function recordQuestions(memory: MemoryItem[]): { questions: string[]; refs: string[] } {
+  const picked = [...memory.filter((m) => m.kind === 'allergy').slice(0, 2), ...memory.filter((m) => m.kind === 'medicine').slice(0, 2)];
+  return {
+    questions: picked.map((m) =>
+      m.kind === 'allergy' ? `Is any treatment you suggest safe with my ${m.text} allergy?` : `Could this, or anything you prescribe for it, interact with my ${m.text}?`,
+    ),
+    refs: picked.map((m) => m.id),
   };
 }
 
@@ -65,7 +87,16 @@ export function carePlan(bundle: BundleContent, level: UrgencyLevel, triggered: 
 }
 
 /** Deterministic draft from approved content; used without a model and as the verified fallback. */
-export function templateDraft(bundle: BundleContent, facts: FactMap, concerns: ConcernDef[], level: UrgencyLevel, registry: EvidenceRegistry, ranking?: Record<string, number>): Draft {
+export function templateDraft(
+  bundle: BundleContent,
+  facts: FactMap,
+  concerns: ConcernDef[],
+  level: UrgencyLevel,
+  registry: EvidenceRegistry,
+  ranking?: Record<string, number>,
+  memory: MemoryItem[] = [],
+): Draft {
+  const fromRecords = recordQuestions(memory);
   const present = (k: string) => facts[k]?.state === 'PRESENT';
   const label = (k: string) => bundle.facts[k]?.label.toLowerCase() ?? k;
   const candidates = concerns.flatMap((c) => c.explanations);
@@ -102,7 +133,8 @@ export function templateDraft(bundle: BundleContent, facts: FactMap, concerns: C
         .join(' '),
       citations: cite(registry, e.sourceKeys),
     })),
-    questionsForClinician: [],
+    questionsForClinician: fromRecords.questions,
+    memoryRefs: fromRecords.refs,
   };
 }
 
@@ -120,6 +152,7 @@ interface BuildArgs {
   limitations: string[];
   emergency: EmergencyContacts;
   verification: ResultContent['verification'];
+  memory: MemoryItem[];
 }
 
 export function buildResult(a: BuildArgs): ResultContent {
@@ -157,10 +190,19 @@ export function buildResult(a: BuildArgs): ResultContent {
     generator: a.generator,
     model: a.model,
     verification: a.verification,
+    memory: a.memory.map(({ id, kind, label, text, href, checkId }) => ({ id, kind, label, text, href, ...(checkId ? { checkId } : {}), used: a.draft.memoryRefs.includes(id) })),
   };
 }
 
-export function escalationResult(bundle: BundleContent, facts: FactMap, concerns: ConcernDef[], urgency: UrgencyOutcome, registry: EvidenceRegistry, emergency: EmergencyContacts): ResultContent {
+export function escalationResult(
+  bundle: BundleContent,
+  facts: FactMap,
+  concerns: ConcernDef[],
+  urgency: UrgencyOutcome,
+  registry: EvidenceRegistry,
+  emergency: EmergencyContacts,
+  memory: MemoryItem[] = [],
+): ResultContent {
   const reasons = urgency.triggered.filter((t) => t.level === 'emergency').map((t) => t.message);
   return buildResult({
     bundle,
@@ -168,7 +210,8 @@ export function escalationResult(bundle: BundleContent, facts: FactMap, concerns
     concerns,
     urgency,
     registry,
-    draft: { summary: `${reasons.join(' ')} Please get emergency help now — call ${emergency.number}.`, explanations: [], questionsForClinician: [] },
+    memory,
+    draft: { summary: `${reasons.join(' ')} Please get emergency help now — call ${emergency.number}.`, explanations: [], questionsForClinician: [], memoryRefs: [] },
     status: 'ESCALATED',
     generator: 'rules',
     model: null,
@@ -179,7 +222,15 @@ export function escalationResult(bundle: BundleContent, facts: FactMap, concerns
   });
 }
 
-export function unsupportedResult(bundle: BundleContent, facts: FactMap, urgency: UrgencyOutcome, message: string, registry: EvidenceRegistry, emergency: EmergencyContacts): ResultContent {
+export function unsupportedResult(
+  bundle: BundleContent,
+  facts: FactMap,
+  urgency: UrgencyOutcome,
+  message: string,
+  registry: EvidenceRegistry,
+  emergency: EmergencyContacts,
+  memory: MemoryItem[] = [],
+): ResultContent {
   const level: UrgencyLevel = urgency.level === 'self_care' ? 'routine' : urgency.level;
   return buildResult({
     bundle,
@@ -187,7 +238,8 @@ export function unsupportedResult(bundle: BundleContent, facts: FactMap, urgency
     concerns: [],
     urgency: { ...urgency, level },
     registry,
-    draft: { summary: message, explanations: [], questionsForClinician: [] },
+    memory,
+    draft: { summary: message, explanations: [], questionsForClinician: [], memoryRefs: [] },
     status: 'UNSUPPORTED',
     generator: 'rules',
     model: null,

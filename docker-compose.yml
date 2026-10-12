@@ -52,6 +52,7 @@ services:
       WEB_ORIGIN: http://localhost:3000
       COOKIE_SECURE: "false"
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
     ports:
       - "4000:4000"
     depends_on:

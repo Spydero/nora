@@ -1,10 +1,43 @@
 import { type Draft, verifyDraft } from './verify.js';
 
 const ctx = { candidateCodes: new Set(['viral_pharyngitis']), citationIds: new Set(['E1']), urgency: 'soon' as const };
-const draft = (summary: string, rationale = 'Your runny nose fits a viral cause (E1).'): Draft => ({
+const draft = (summary: string, rationale = 'Your runny nose fits a viral cause (E1).', extra: Partial<Draft> = {}): Draft => ({
   summary,
   explanations: [{ code: 'viral_pharyngitis', likelihood: 'possible', rationale, citations: ['E1'] }],
   questionsForClinician: [],
+  memoryRefs: [],
+  ...extra,
+});
+
+describe('memory grounding', () => {
+  const grounded = {
+    ...ctx,
+    memoryIds: new Set(['M1', 'M2']),
+    groundText: 'Penicillin\nLevothyroxine\nMost sore throats are caused by viruses.',
+    watchTerms: ['amoxicillin', 'penicillin', 'levothyroxine', 'metformin', 'diabetes'],
+  };
+
+  it('accepts history that cites a memory item', () => {
+    const d = draft('You have a sore throat. Because you are allergic to penicillin, tell the doctor before any medicine is prescribed.', undefined, { memoryRefs: ['M1'] });
+    expect(verifyDraft(d, grounded)).toEqual([]);
+  });
+
+  it('rejects history claims without a memory reference', () => {
+    const cases = ['Your sore throat keeps coming back, so see a doctor within 24–48 hours.', 'You are allergic to penicillin, so mention it to the doctor.', 'Since you take levothyroxine, a doctor should check this within 24–48 hours.'];
+    for (const summary of cases) expect(verifyDraft(draft(summary), grounded).join(' ')).toMatch(/without citing a memory item/);
+  });
+
+  it('rejects memory IDs that were never provided', () => {
+    expect(verifyDraft(draft('You have a sore throat; see a doctor within 24–48 hours.', undefined, { memoryRefs: ['M7'] }), grounded).join(' ')).toMatch(/M7 does not exist/);
+  });
+
+  it('rejects medicines or conditions that are not in records or evidence', () => {
+    const d = draft('You have a sore throat; see a doctor within 24–48 hours.', 'With diabetes, a viral cause still fits your runny nose (E1).', { questionsForClinician: ['Should I avoid metformin?'], memoryRefs: ['M1'] });
+    const issues = verifyDraft(d, grounded).join(' ');
+    expect(issues).toMatch(/"diabetes"/);
+    expect(issues).toMatch(/"metformin"/);
+    expect(issues).not.toMatch(/"penicillin"/);
+  });
 });
 
 describe('draft verification', () => {

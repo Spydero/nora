@@ -5,13 +5,14 @@ import { Alert, Button, Card, cn, StatusBadge } from "@nora/ui";
 import { Loading, LoadError, PageShell, SectionTitle } from "@/components/page";
 import { ApiError } from "@/lib/api";
 import type { Role } from "@/lib/auth-context";
-import { careApi, formatDate, type AdminOverview, type AdminProvider, type Member } from "@/lib/care";
+import { careApi, formatDate, URGENCY_LABEL, type AdminOverview, type AdminProvider, type Analytics, type AnalyticsRange, type Member } from "@/lib/care";
 import { ROLE_LABEL } from "@/lib/roles";
 import { useLoad } from "@/lib/use-load";
 
-type Tab = "overview" | "members" | "doctors" | "audit";
+type Tab = "overview" | "analytics" | "members" | "doctors" | "audit";
 const TABS: { id: Tab; label: string }[] = [
   { id: "overview", label: "Overview" },
+  { id: "analytics", label: "Analytics" },
   { id: "members", label: "Members" },
   { id: "doctors", label: "Doctors" },
   { id: "audit", label: "Audit log" },
@@ -41,6 +42,7 @@ export default function AdminPage() {
         ))}
       </div>
       {tab === "overview" && <Overview />}
+      {tab === "analytics" && <AnalyticsView />}
       {tab === "members" && <Members />}
       {tab === "doctors" && <Doctors />}
       {tab === "audit" && <Audit />}
@@ -53,6 +55,123 @@ function Stat({ label, value, tone }: { label: string; value: number; tone?: "da
     <Card className="flex flex-col gap-1">
       <p className="text-meta font-medium text-fg-muted">{label}</p>
       <p className={cn("text-page-title font-semibold", tone === "danger" && value > 0 && "text-danger")}>{value}</p>
+    </Card>
+  );
+}
+
+const RANGES: { id: AnalyticsRange; label: string }[] = [
+  { id: "7d", label: "7 days" },
+  { id: "30d", label: "30 days" },
+  { id: "90d", label: "90 days" },
+];
+
+function Metric({ label, value, unit = "", hint }: { label: string; value: number | null; unit?: string; hint?: string }) {
+  return (
+    <Card className="flex flex-col gap-1">
+      <p className="text-meta font-medium text-fg-muted">{label}</p>
+      <p className="text-page-title font-semibold">{value === null ? <span className="text-card-title text-fg-muted">Too few to show</span> : `${value}${unit}`}</p>
+      {hint && <p className="text-meta text-fg-muted">{hint}</p>}
+    </Card>
+  );
+}
+
+function AnalyticsView() {
+  const [range, setRange] = useState<AnalyticsRange>("30d");
+  const { data, error, loading, reload } = useLoad(() => careApi.analytics(range), range);
+
+  return (
+    <div className="flex flex-col gap-6">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <p className="max-w-2xl text-secondary text-fg-muted">
+          Aggregates only. No symptoms, messages or patient names are included, and counts below {data?.minCount ?? 5} are withheld so individuals can’t be identified.
+        </p>
+        <div role="radiogroup" aria-label="Time range" className="flex rounded-control bg-subtle p-1">
+          {RANGES.map((r) => (
+            <button
+              key={r.id}
+              type="button"
+              role="radio"
+              aria-checked={range === r.id}
+              onClick={() => setRange(r.id)}
+              className={cn("min-h-9 rounded-control px-3 text-secondary font-medium", range === r.id ? "bg-panel text-brand-navy shadow-sm" : "text-fg-muted")}
+            >
+              {r.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {error ? (
+        <LoadError error={error} onRetry={reload} />
+      ) : !data ? (
+        <Loading />
+      ) : (
+        <div className={cn("flex flex-col gap-6", loading && "opacity-60")}>
+          <section aria-labelledby="funnel-h" className="flex flex-col gap-3">
+            <SectionTitle id="funnel-h">Checks</SectionTitle>
+            <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
+              <Metric label="Started" value={data.funnel.started} />
+              <Metric label="Finished" value={data.funnel.completed} />
+              <Metric label="Completion rate" value={data.funnel.completionRate} unit="%" />
+              <Metric label="Follow-up checks" value={data.funnel.followUps} hint="Patients rechecking after a change" />
+            </div>
+          </section>
+
+          <section aria-labelledby="outcome-h" className="flex flex-col gap-3">
+            <SectionTitle id="outcome-h">Outcomes</SectionTitle>
+            <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
+              <Metric label="Urgent or emergency advice" value={data.outcomes.urgentOrEmergency} />
+              <Metric label="Not covered yet" value={data.outcomes.unsupported} hint={data.outcomes.unsupportedRate !== null ? `${data.outcomes.unsupportedRate}% of assessments` : undefined} />
+              <Metric label="Doctor handoffs" value={data.outcomes.handoffs} hint={data.outcomes.handoffRate !== null ? `${data.outcomes.handoffRate}% of assessments` : undefined} />
+              <Metric label="Failed assessments" value={data.reliability.failedAssessments} />
+            </div>
+            <UrgencyBars rows={data.urgency} />
+          </section>
+
+          <section aria-labelledby="safety-h" className="flex flex-col gap-3">
+            <SectionTitle id="safety-h">Safety and quality</SectionTitle>
+            <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
+              <Metric label="Clinician reviews opened" value={data.safety.reviewsOpened} />
+              <Metric label="Median time to review" value={data.safety.medianReviewHours} unit=" h" />
+              <Metric label="Urgency corrected by clinician" value={data.safety.correctionRate} unit="%" hint={data.safety.reviewsCorrected !== null ? `${data.safety.reviewsCorrected} reviews` : undefined} />
+              <Metric
+                label="AI drafts not used"
+                value={data.ai.fallbackRate}
+                unit="%"
+                hint="Failed or rejected by safety checks; approved guidance was shown instead"
+              />
+            </div>
+          </section>
+        </div>
+      )}
+    </div>
+  );
+}
+
+const URGENCY_BAR: Record<string, string> = {
+  emergency: "bg-danger",
+  urgent: "bg-danger/70",
+  soon: "bg-warning",
+  routine: "bg-info",
+  self_care: "bg-success",
+};
+
+function UrgencyBars({ rows }: { rows: Analytics["urgency"] }) {
+  const max = Math.max(1, ...rows.map((r) => r.count ?? 0));
+  return (
+    <Card className="flex flex-col gap-2">
+      <p className="text-secondary font-medium">Advice given, by urgency</p>
+      <ul className="flex flex-col gap-1.5">
+        {rows.map((r) => (
+          <li key={r.level} className="grid grid-cols-[9rem_1fr_5rem] items-center gap-2 text-secondary">
+            <span className="text-fg-muted">{URGENCY_LABEL[r.level]}</span>
+            <span className="h-2.5 rounded-full bg-subtle">
+              {r.count !== null && r.count > 0 && <span className={cn("block h-full rounded-full", URGENCY_BAR[r.level])} style={{ width: `${(r.count / max) * 100}%` }} />}
+            </span>
+            <span className="text-right tabular-nums">{r.count === null ? "<5" : r.count}</span>
+          </li>
+        ))}
+      </ul>
     </Card>
   );
 }

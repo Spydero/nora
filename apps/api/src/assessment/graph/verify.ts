@@ -4,6 +4,8 @@ export interface Draft {
   summary: string;
   explanations: { code: string; likelihood: 'more_likely' | 'possible' | 'less_likely'; rationale: string; citations: string[] }[];
   questionsForClinician: string[];
+  /** Memory item IDs (e.g. "M2") the text relies on. */
+  memoryRefs: string[];
 }
 
 const DIAGNOSIS = [
@@ -36,10 +38,44 @@ const THIRD_PERSON = [
   /\ban? \d{1,3}[-‑ ]year[-‑ ]old\b/i,
 ];
 
+/** Statements about the patient's past or records; these must cite a memory item. */
+const HISTORY_CLAIM = [
+  /\b(last time|previously|your (last|previous|earlier|recent) (check|visit|assessment|appointment)|you (have|had) (a )?history|you('ve| have) had (this|it|something similar) before|keeps? coming back|recurring|recurrent)\b/i,
+  /\byou (take|are taking|are on|have been taking)\b/i,
+  /\byour (medicines?|medications?|tablets?|allergy|allergies|condition|conditions|records?|upcoming appointment)\b/i,
+  /\b(you are|you're) allergic\b/i,
+];
+
 export interface VerifyContext {
   candidateCodes: ReadonlySet<string>;
   citationIds: ReadonlySet<string>;
   urgency: UrgencyLevel;
+  /** IDs of the memory items given to the model. */
+  memoryIds?: ReadonlySet<string>;
+  /** Everything the model was allowed to know: memory text, evidence text, candidate labels. */
+  groundText?: string;
+  /** Medicine and condition names that must not appear unless the ground text contains them. */
+  watchTerms?: readonly string[];
+}
+
+const wordRe = (term: string) => new RegExp(`\\b${term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`, 'i');
+
+/** History claims need memory; named medicines or conditions must come from memory or evidence. */
+function groundingIssues(draft: Draft, texts: string[], ctx: VerifyContext): string[] {
+  const issues: string[] = [];
+  const ids = ctx.memoryIds ?? new Set<string>();
+  for (const ref of draft.memoryRefs) if (!ids.has(ref)) issues.push(`Memory item ${ref} does not exist.`);
+  if (draft.memoryRefs.length === 0) {
+    for (const t of texts) {
+      if (HISTORY_CLAIM.some((re) => re.test(t))) issues.push(`Refers to your history or records without citing a memory item: "${t.slice(0, 80)}"`);
+    }
+  }
+  const ground = (ctx.groundText ?? '').toLowerCase();
+  for (const term of ctx.watchTerms ?? []) {
+    const re = wordRe(term);
+    if (!ground.includes(term.toLowerCase()) && texts.some((t) => re.test(t))) issues.push(`Mentions "${term}", which is not in your records or the approved sources.`);
+  }
+  return issues;
 }
 
 /** Deterministic safety and provenance checks applied to every draft. */
@@ -68,5 +104,6 @@ export function verifyDraft(draft: Draft, ctx: VerifyContext): string[] {
     if (MEDICINE_INSTRUCTION.test(t)) issues.push(`Medicine dosing or instructions are not allowed: "${t.slice(0, 80)}"`);
     if (THIRD_PERSON.some((re) => re.test(t))) issues.push(`Address the patient directly as "you": "${t.slice(0, 80)}"`);
   }
+  issues.push(...groundingIssues(draft, texts, ctx));
   return issues;
 }

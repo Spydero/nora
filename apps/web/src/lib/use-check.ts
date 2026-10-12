@@ -13,10 +13,15 @@ export interface CheckController {
   error: string | null;
   busy: boolean;
   consent: ConsentNotice | null;
+  /** The finished check the next new check will follow up, if the patient chose "Recheck". */
+  followUp: { id: string; title: string | null } | null;
   start(text: string): Promise<void>;
   send(text: string): Promise<void>;
   answer(value: AnswerValue): Promise<void>;
   acceptConsent(): Promise<void>;
+  acknowledge(itemId: string, done: boolean): Promise<void>;
+  open(id: string): Promise<void>;
+  recheck(): void;
   reset(): void;
 }
 
@@ -31,6 +36,7 @@ export function useCheck(): CheckController {
   const [busy, setBusy] = useState(false);
   const [consent, setConsent] = useState<ConsentNotice | null>(null);
   const [pendingText, setPendingText] = useState<string | null>(null);
+  const [followUp, setFollowUp] = useState<CheckController["followUp"]>(null);
 
   const adopt = useCallback((view: CheckView) => {
     sessionStorage.setItem(CURRENT_CHECK_KEY, view.id);
@@ -44,7 +50,14 @@ export function useCheck(): CheckController {
     setError(null);
     setConsent(null);
     setPendingText(null);
+    setFollowUp(null);
   }, []);
+
+  const recheck = useCallback(() => {
+    const from = check ? { id: check.id, title: check.title } : null;
+    reset();
+    setFollowUp(from);
+  }, [check, reset]);
 
   useEffect(() => {
     const id = sessionStorage.getItem(CURRENT_CHECK_KEY);
@@ -117,10 +130,11 @@ export function useCheck(): CheckController {
   const begin = useCallback(
     async (text: string) => {
       try {
-        const created = await checksApi.create();
+        const created = await checksApi.create(followUp?.id);
         setStage(STAGE_LABELS.started ?? null);
         adopt(await checksApi.send(created.id, text));
         setPendingText(null);
+        setFollowUp(null);
       } catch (err) {
         if (err instanceof ApiError && err.code === "CONSENT_REQUIRED") {
           const notices = await checksApi.consents();
@@ -131,7 +145,7 @@ export function useCheck(): CheckController {
         throw err;
       }
     },
-    [adopt],
+    [adopt, followUp],
   );
 
   const start = useCallback((text: string) => run(() => begin(text)), [run, begin]);
@@ -172,5 +186,21 @@ export function useCheck(): CheckController {
     [run, consent, pendingText, begin],
   );
 
-  return { check, stage, error, busy, consent, start, send, answer, acceptConsent, reset };
+  const acknowledge = useCallback(
+    async (itemId: string, done: boolean) => {
+      if (!check) return;
+      setCheck({ ...check, carePlanDone: done ? [...check.carePlanDone, itemId] : check.carePlanDone.filter((i) => i !== itemId) });
+      try {
+        setCheck(await checksApi.acknowledge(check.id, itemId, done));
+      } catch (err) {
+        setCheck(check);
+        setError(message(err));
+      }
+    },
+    [check],
+  );
+
+  const open = useCallback((id: string) => run(async () => adopt(await checksApi.get(id))), [run, adopt]);
+
+  return { check, stage, error, busy, consent, followUp, start, send, answer, acceptConsent, acknowledge, open, recheck, reset };
 }
