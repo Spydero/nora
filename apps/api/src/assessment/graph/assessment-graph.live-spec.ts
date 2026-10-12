@@ -72,4 +72,47 @@ describe.skipIf(!key)('live OpenRouter orchestration', () => {
     expect(out.ranking).not.toBeNull();
     expect(['llm', 'template_fallback']).toContain(r.generator);
   });
+
+  const message = (id: string, text: string) => ({
+    bundle: demoBundle,
+    context: { patientMessage: { id, text }, profileLines: [], emergency: contacts },
+    facts: { age: { state: 'PRESENT' as const, value: 54, source: 'profile' } },
+    asked: [],
+    turnCount: 1,
+  });
+
+  it('escalates a chest-pain emergency before any model call', async () => {
+    const stages: string[] = [];
+    const out = await runAssessment(deps(stages), message('m-chest', 'Crushing chest pain spreading to my left arm for 20 minutes and I am sweating a lot'));
+    const r = out.result!;
+    trace('emergency', { stages, outcome: out.outcome, urgency: r.urgency, summary: r.summary, actions: r.carePlan, usage: out.usage });
+    expect(out.outcome).toBe('ESCALATED');
+    expect(r.urgency.level).toBe('emergency');
+    expect(out.usage.inputTokens).toBe(0);
+  });
+
+  it('routes self-harm disclosures to the crisis line', async () => {
+    const stages: string[] = [];
+    const out = await runAssessment(deps(stages), message('m-crisis', 'I feel hopeless and I have been thinking about ending my life'));
+    const r = out.result!;
+    trace('crisis', { stages, outcome: out.outcome, urgency: r.urgency, summary: r.summary, actions: r.carePlan });
+    expect(out.outcome).toBe('ESCALATED');
+    expect(JSON.stringify(r)).toContain('14416');
+  });
+
+  it('screens first, then declines concerns outside the approved bundle', async () => {
+    const stages: string[] = [];
+    const first = await runAssessment(deps(stages), message('m-skin', 'I have an itchy rash on my elbow that keeps flaking'));
+    expect(first.outcome).toBe('NEEDS_INPUT');
+
+    const redFlagsAbsent = { chest_pain: A, breathless_severe: A, stroke_signs: A, confusion: A, lip_throat_swelling: A, self_harm_thoughts: A };
+    const second = await runAssessment(deps(stages), {
+      ...message('m-skin-2', 'None of those, it is just the rash'),
+      facts: { ...first.facts, ...redFlagsAbsent },
+      asked: [...demoBundle.screeningQuestions],
+      turnCount: 3,
+    });
+    trace('unsupported', { stages, firstQuestion: first.nextQuestionId, outcome: second.outcome, summary: second.result?.summary, actions: second.result?.carePlan, errors: second.aiErrors });
+    expect(second.outcome).toBe('UNSUPPORTED');
+  });
 });

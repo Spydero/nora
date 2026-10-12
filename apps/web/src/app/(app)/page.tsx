@@ -4,6 +4,7 @@ import { useState, type ReactNode } from "react";
 import { ClipboardList, FileSearch, ListChecks, Send } from "lucide-react";
 import { Button, Card, cn, Panel, StatusBadge } from "@nora/ui";
 import { useAuth } from "@/lib/auth-context";
+import { firstName } from "@/lib/names";
 
 type View = "intake" | "findings" | "next";
 
@@ -17,13 +18,13 @@ export default function WorkspacePage() {
   const { state } = useAuth();
   const [view, setView] = useState<View>("intake");
   const [drawerOpen, setDrawerOpen] = useState(false);
-  const firstName = state.profile?.user.displayName.split(" ")[0];
+  const givenName = state.profile ? firstName(state.profile.user.displayName) : undefined;
 
   return (
-    <main className="mx-auto flex h-[calc(100vh-4rem)] max-w-[1600px] flex-col gap-4 p-4">
+    <main className="mx-auto flex h-[calc(100dvh-4rem)] max-w-[1600px] max-md:h-[calc(100dvh-8rem)] flex-col gap-4 p-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-page-title font-semibold">Hello{firstName ? `, ${firstName}` : ""}</h1>
+          <h1 className="text-page-title font-semibold">Hello{givenName ? `, ${givenName}` : ""}</h1>
           <p className="text-secondary text-fg-muted">Describe what you are experiencing and Nora will ask a few questions.</p>
         </div>
         <Button variant="secondary" className="xl:hidden max-md:hidden" onClick={() => setDrawerOpen(true)}>

@@ -33,6 +33,25 @@
 | **Defence in depth** | A deterministic red-flag extractor always runs beside the LLM extractor; a critical finding it sees can never be dropped by the model. |
 | **Tenant isolation & privacy** | Tenant-scoped data access, append-only consent, audit trails, idle timeouts, rotating refresh tokens and CSRF protection. |
 
+## Screenshots
+
+<table>
+  <tr>
+    <td width="66%"><img src="docs/screenshots/03-patient-workspace.png" alt="Patient workspace with intake and findings panels" /></td>
+    <td width="34%"><img src="docs/screenshots/05-mobile-workspace.png" alt="Patient workspace on a phone with bottom navigation" /></td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/04-profile-menu.png" alt="Profile menu showing the patient and organisation" /></td>
+    <td><img src="docs/screenshots/06-mobile-next-steps.png" alt="Mobile next steps with urgent-symptom guidance" /></td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/09-register-validation.png" alt="Registration form with inline validation" /></td>
+    <td><img src="docs/screenshots/07-tablet-next-steps-drawer.png" alt="Tablet layout with the next steps drawer" /></td>
+  </tr>
+</table>
+
+More in [`docs/screenshots/`](docs/screenshots/).
+
 ## Architecture
 
 ```mermaid

@@ -3,7 +3,7 @@
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, type ReactNode } from "react";
 import { NoraLogo } from "@nora/ui";
-import { AppHeader } from "@/components/app-header";
+import { AppHeader, MobileNav } from "@/components/app-header";
 import { useAuth } from "@/lib/auth-context";
 
 /**
@@ -36,9 +36,10 @@ export function AppShell({ children }: { children: ReactNode }) {
           </div>
         </header>
       )}
-      <div className="flex-1" aria-busy={state.status !== "authenticated" || undefined}>
+      <div className="flex-1 max-md:pb-16" aria-busy={state.status !== "authenticated" || undefined}>
         {children}
       </div>
+      {state.status === "authenticated" && <MobileNav />}
     </div>
   );
 }

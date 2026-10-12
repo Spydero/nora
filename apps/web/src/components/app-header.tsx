@@ -3,16 +3,53 @@
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
-import { ChevronDown, LogOut, Plus } from "lucide-react";
+import { CalendarDays, ChevronDown, ClipboardList, LogOut, Pill, Plus, Stethoscope } from "lucide-react";
 import { Button, cn, NoraLogo } from "@nora/ui";
 import { useAuth, type Profile } from "@/lib/auth-context";
+import { initials } from "@/lib/names";
 
 const NAV = [
-  { href: "/", label: "Intake" },
-  { href: "/medicines", label: "Medicines" },
-  { href: "/doctors", label: "Doctors" },
-  { href: "/appointments", label: "Appointments" },
+  { href: "/", label: "Intake", icon: ClipboardList },
+  { href: "/medicines", label: "Medicines", icon: Pill },
+  { href: "/doctors", label: "Doctors", icon: Stethoscope },
+  { href: "/appointments", label: "Appointments", icon: CalendarDays },
 ];
+
+function isActive(pathname: string, href: string) {
+  return href === "/" ? pathname === "/" : pathname.startsWith(href);
+}
+
+export function MobileNav() {
+  const pathname = usePathname();
+
+  return (
+    <nav
+      aria-label="Primary mobile"
+      className="fixed inset-x-0 bottom-0 z-20 border-t border-line bg-panel pb-[env(safe-area-inset-bottom)] md:hidden"
+    >
+      <ul className="grid grid-cols-4">
+        {NAV.map(({ href, label, icon: Icon }) => {
+          const active = isActive(pathname, href);
+          return (
+            <li key={href}>
+              <Link
+                href={href}
+                aria-current={active ? "page" : undefined}
+                className={cn(
+                  "flex min-h-16 flex-col items-center justify-center gap-1 text-meta font-medium",
+                  active ? "text-brand-teal" : "text-fg-muted hover:text-fg",
+                )}
+              >
+                <Icon aria-hidden className="size-5" strokeWidth={active ? 2.25 : 1.75} />
+                {label}
+              </Link>
+            </li>
+          );
+        })}
+      </ul>
+    </nav>
+  );
+}
 
 export function AppHeader({ profile }: { profile: Profile }) {
   const pathname = usePathname();
@@ -26,7 +63,7 @@ export function AppHeader({ profile }: { profile: Profile }) {
         <nav aria-label="Primary" className="hidden flex-1 md:block">
           <ul className="flex items-center gap-1">
             {NAV.map((item) => {
-              const active = item.href === "/" ? pathname === "/" : pathname.startsWith(item.href);
+              const active = isActive(pathname, item.href);
               return (
                 <li key={item.href}>
                   <Link
@@ -45,7 +82,7 @@ export function AppHeader({ profile }: { profile: Profile }) {
           </ul>
         </nav>
         <div className="ml-auto flex items-center gap-2">
-          <Button variant="secondary" className="hidden sm:inline-flex">
+          <Button variant="secondary" className="max-sm:hidden">
             <Plus aria-hidden className="size-5" strokeWidth={2} />
             New check
           </Button>
@@ -77,12 +114,7 @@ function ProfileMenu({ profile }: { profile: Profile }) {
     };
   }, [open]);
 
-  const initials = profile.user.displayName
-    .split(/\s+/)
-    .map((part) => part[0])
-    .slice(0, 2)
-    .join("")
-    .toUpperCase();
+  const avatarInitials = initials(profile.user.displayName);
 
   async function handleSignOut() {
     await signOut();
@@ -99,7 +131,7 @@ function ProfileMenu({ profile }: { profile: Profile }) {
         className="inline-flex min-h-11 items-center gap-2 rounded-control px-2 hover:bg-subtle"
       >
         <span aria-hidden className="grid size-8 place-items-center rounded-full bg-brand-navy text-meta font-semibold text-fg-inverse">
-          {initials}
+          {avatarInitials}
         </span>
         <span className="hidden text-secondary font-medium lg:inline">{profile.user.displayName}</span>
         <ChevronDown aria-hidden className="size-4 text-fg-muted" />

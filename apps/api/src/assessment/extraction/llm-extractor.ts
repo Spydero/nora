@@ -35,6 +35,21 @@ export function extractionSchema(bundle: BundleContent) {
 
 const normalise = (s: string) => s.toLowerCase().replace(/\s+/g, ' ').trim();
 
+function numberRange(bundle: BundleContent, factKey: string): { min: number; max: number } {
+  const question = Object.values(bundle.questions).find((q) => q.type === 'number' && q.factKey === factKey);
+  return { min: question?.min ?? Number.NEGATIVE_INFINITY, max: question?.max ?? Number.POSITIVE_INFINITY };
+}
+
+/**
+ * A model-reported number must be a number the patient actually wrote (or its
+ * °F→°C conversion). Quotes without digits ("a week") are left to the range check.
+ */
+function numberGrounded(value: number, quote: string, unit: string | undefined): boolean {
+  const written = (quote.match(/\d+(?:\.\d+)?/g) ?? []).map(Number);
+  if (written.length === 0) return true;
+  return written.some((n) => Math.abs(n - value) < 0.05 || (unit === '°C' && Math.abs(((n - 32) * 5) / 9 - value) < 0.2));
+}
+
 /** Drops anything the model could not ground in the patient's own words. */
 export function validateObservations(bundle: BundleContent, message: string, raw: z.infer<ReturnType<typeof extractionSchema>>['observations']): Observation[] {
   const haystack = normalise(message);
@@ -46,6 +61,8 @@ export function validateObservations(bundle: BundleContent, message: string, raw
     const state = o.assertion === 'negated' ? 'ABSENT' : 'PRESENT';
     if (def.type === 'number') {
       if (state !== 'PRESENT' || o.value === null || !Number.isFinite(o.value)) continue;
+      const { min, max } = numberRange(bundle, o.factKey);
+      if (o.value < min || o.value > max || !numberGrounded(o.value, o.quote, def.unit)) continue;
       out.push({ factKey: o.factKey, state, value: o.value, quote: o.quote, assertion: o.assertion, source: 'llm' });
     } else {
       out.push({ factKey: o.factKey, state, quote: o.quote, assertion: o.assertion, source: 'llm' });
@@ -73,7 +90,8 @@ export async function extractWithModel(
 
 /**
  * Model observations take precedence for nuance, but a critical fact the
- * rules saw as PRESENT is never dropped or flipped by the model.
+ * rules saw as PRESENT is never dropped or flipped by the model, and a number
+ * the rules parsed deterministically is never replaced by the model's reading.
  */
 export function mergeObservations(bundle: BundleContent, rules: Observation[], llm: Observation[]): Observation[] {
   const merged = new Map(llm.map((o) => [o.factKey, o]));
@@ -81,6 +99,7 @@ export function mergeObservations(bundle: BundleContent, rules: Observation[], l
     const existing = merged.get(r.factKey);
     if (!existing) merged.set(r.factKey, r);
     else if (bundle.facts[r.factKey]?.critical && r.state === 'PRESENT' && existing.state !== 'PRESENT') merged.set(r.factKey, r);
+    else if (bundle.facts[r.factKey]?.type === 'number' && r.value !== undefined && r.value !== null) merged.set(r.factKey, r);
   }
   return [...merged.values()];
 }
