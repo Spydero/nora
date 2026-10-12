@@ -37,6 +37,13 @@ export interface CheckView {
   result: (ResultContent & { createdAt: string }) | null;
   lastEventSequence: string;
   emergency: { number: string; crisisLine: { name: string; number: string } | null };
+  review: {
+    status: 'pending' | 'reviewed' | 'corrected';
+    clinician: string | null;
+    correctedUrgency: string | null;
+    patientNote: string | null;
+    reviewedAt: string | null;
+  } | null;
 }
 
 const ACTIVE = ['DRAFT', 'COLLECTING'] as const;
@@ -90,9 +97,16 @@ export class ChecksService {
       where: { tenantId: principal.tenantId, patientUserId: principal.userId, status: { not: 'ARCHIVED' } },
       orderBy: { createdAt: 'desc' },
       take: 20,
-      select: { id: true, title: true, status: true, urgency: true, createdAt: true, updatedAt: true },
+      select: { id: true, title: true, status: true, urgency: true, createdAt: true, updatedAt: true, currentResultId: true },
     });
-    return rows.map((r) => ({ ...r, createdAt: r.createdAt.toISOString(), updatedAt: r.updatedAt.toISOString() }));
+    const resultIds = rows.map((r) => r.currentResultId).filter((x): x is string => !!x);
+    const results = await this.prisma.assessmentResult.findMany({ where: { id: { in: resultIds } }, select: { id: true, reviewStatus: true } });
+    return rows.map(({ currentResultId, ...r }) => ({
+      ...r,
+      reviewStatus: results.find((x) => x.id === currentResultId)?.reviewStatus ?? null,
+      createdAt: r.createdAt.toISOString(),
+      updatedAt: r.updatedAt.toISOString(),
+    }));
   }
 
   async postMessage(principal: AuthPrincipal, id: string, text: string, idempotencyKey: string): Promise<CheckView> {
@@ -161,13 +175,19 @@ export class ChecksService {
 
   async view(principal: AuthPrincipal, id: string): Promise<CheckView> {
     const session = await this.owned(principal, id);
-    const [messages, result, lastEvent, tenantCtx, bundle] = await Promise.all([
+    const [messages, result, lastEvent, tenantCtx, bundle, reviewTask] = await Promise.all([
       this.prisma.message.findMany({ where: { sessionId: id }, orderBy: { createdAt: 'asc' } }),
       session.currentResultId ? this.prisma.assessmentResult.findUnique({ where: { id: session.currentResultId } }) : null,
       this.prisma.sessionEvent.findFirst({ where: { sessionId: id }, orderBy: { sequence: 'desc' }, select: { sequence: true } }),
       this.store.tenantContext(principal.tenantId),
       this.store.bundle(session.bundleId),
+      session.currentResultId
+        ? this.prisma.reviewTask.findUnique({ where: { resultId: session.currentResultId }, include: { decisions: { orderBy: { createdAt: 'desc' }, take: 1 } } })
+        : null,
     ]);
+    const decision = reviewTask?.decisions[0];
+    const reviewer = decision ? await this.prisma.user.findUnique({ where: { id: decision.clinicianId }, select: { displayName: true } }) : null;
+    const reviewVisible = !!reviewTask && (!!decision || (await this.consent.hasGranted(principal.tenantId, principal.userId, 'CLINICIAN_SHARING')));
     const q = session.pendingQuestionId ? bundle.questions[session.pendingQuestionId] : undefined;
     return {
       id: session.id,
@@ -196,6 +216,15 @@ export class ChecksService {
         : null,
       lastEventSequence: (lastEvent?.sequence ?? 0n).toString(),
       emergency: tenantCtx.emergency,
+      review: reviewVisible
+        ? {
+            status: !decision ? 'pending' : decision.correctedUrgency ? 'corrected' : 'reviewed',
+            clinician: reviewer?.displayName ?? null,
+            correctedUrgency: decision?.correctedUrgency ?? null,
+            patientNote: decision?.patientNote ?? null,
+            reviewedAt: decision?.createdAt.toISOString() ?? null,
+          }
+        : null,
     };
   }
 

@@ -37,7 +37,7 @@ export interface RegisterInput extends LoginInput {
 type AuthState =
   | { status: "loading"; profile: null }
   | { status: "authenticated"; profile: Profile }
-  | { status: "unauthenticated"; profile: null };
+  | { status: "unauthenticated"; profile: null; signedOut: boolean };
 
 interface AuthContextValue {
   state: AuthState;
@@ -58,7 +58,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       .catch((error: unknown) => {
         if (cancelled) return;
         if (!(error instanceof ApiError) || error.status !== 401) console.error(error);
-        setState({ status: "unauthenticated", profile: null });
+        setState({ status: "unauthenticated", profile: null, signedOut: false });
       });
     return () => {
       cancelled = true;
@@ -79,7 +79,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     try {
       await api<void>("/auth/logout", { method: "POST" });
     } finally {
-      setState({ status: "unauthenticated", profile: null });
+      setState({ status: "unauthenticated", profile: null, signedOut: true });
     }
   }, []);
 

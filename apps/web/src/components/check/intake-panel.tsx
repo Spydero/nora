@@ -46,9 +46,14 @@ export function IntakePanel({ controller, className, onShowFindings }: { control
                       ? "bg-brand-navy text-fg-inverse"
                       : m.kind === "error" || (m.kind === "result" && emergency)
                         ? "bg-danger-bg text-danger"
-                        : "bg-subtle",
+                        : m.kind === "review"
+                          ? "border border-info/30 bg-info-bg"
+                          : "bg-subtle",
                   )}
                 >
+                  {m.kind === "review" && (
+                    <p className="text-meta font-semibold text-info">{check.review?.clinician ? `Note from ${check.review.clinician}` : "Note from your clinician"}</p>
+                  )}
                   {m.kind === "result" ? (
                     <>
                       <p className="font-semibold">

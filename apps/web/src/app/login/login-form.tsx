@@ -21,7 +21,8 @@ export function LoginForm() {
 
   async function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const form = new FormData(event.currentTarget);
+    const formElement = event.currentTarget;
+    const form = new FormData(formElement);
     setSubmitting(true);
     setError(null);
     try {
@@ -30,9 +31,12 @@ export function LoginForm() {
         email: String(form.get("email") ?? ""),
         password: String(form.get("password") ?? ""),
       });
+      // Next keeps this page's state for back navigation, so clear it before the next visitor signs in.
+      formElement.reset();
       router.replace(next);
     } catch (err) {
       setError(err instanceof ApiError ? err : new ApiError(0, "NETWORK", "We could not reach Nora. Check your connection and try again."));
+    } finally {
       setSubmitting(false);
     }
   }

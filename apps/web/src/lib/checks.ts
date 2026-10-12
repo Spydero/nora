@@ -67,7 +67,7 @@ export interface CheckResult {
 export interface CheckMessage {
   id: string;
   sender: "patient" | "nora";
-  kind: "text" | "answer" | "question" | "result" | "error";
+  kind: "text" | "answer" | "question" | "result" | "error" | "review";
   text: string;
   questionId: string | null;
   createdAt: string;
@@ -86,6 +86,13 @@ export interface CheckView {
   result: CheckResult | null;
   lastEventSequence: string;
   emergency: EmergencyContacts;
+  review: {
+    status: "pending" | "reviewed" | "corrected";
+    clinician: string | null;
+    correctedUrgency: UrgencyLevel | null;
+    patientNote: string | null;
+    reviewedAt: string | null;
+  } | null;
 }
 
 export interface CheckEvent {

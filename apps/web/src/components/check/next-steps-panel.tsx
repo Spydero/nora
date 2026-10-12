@@ -42,8 +42,11 @@ export function NextStepsPanel({ check, emergency, className }: { check: CheckVi
                 <p className="font-semibold">
                   See {result.handoff.specialty ? `a ${result.handoff.specialty.toLowerCase()}` : "a doctor"} · {result.handoff.timeframe}
                 </p>
-                <Link href="/doctors" className="text-secondary font-medium text-brand-teal underline-offset-2 hover:underline">
-                  Find a doctor near you
+                <Link
+                  href={`/doctors?${new URLSearchParams({ ...(result.handoff.specialty ? { specialty: result.handoff.specialty } : {}), check: check!.id }).toString()}`}
+                  className="text-secondary font-medium text-brand-teal underline-offset-2 hover:underline"
+                >
+                  Find a {result.handoff.specialty ? result.handoff.specialty.toLowerCase() : "doctor"}
                 </Link>
               </Card>
             )}

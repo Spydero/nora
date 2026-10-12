@@ -1,6 +1,6 @@
 "use client";
 
-import { FileSearch, Loader2 } from "lucide-react";
+import { FileSearch, Loader2, Stethoscope } from "lucide-react";
 import { Alert, Card, cn, Panel, StatusBadge, type Status } from "@nora/ui";
 import type { CheckResult, CheckView, UrgencyLevel } from "@/lib/checks";
 import { EmptyState } from "./intake-panel";
@@ -61,16 +61,49 @@ export function FindingsPanel({ check, className }: { check: CheckView | null; c
           />
         )
       ) : (
-        <ResultView result={result} />
+        <ResultView result={result} review={check?.review ?? null} />
       )}
     </Panel>
   );
 }
 
-function ResultView({ result }: { result: CheckResult }) {
+const URGENCY_TEXT: Record<UrgencyLevel, string> = {
+  emergency: "emergency care now",
+  urgent: "see a doctor today",
+  soon: "see a doctor within 24–48 hours",
+  routine: "book a routine appointment",
+  self_care: "self-care at home",
+};
+
+function ClinicianReview({ review }: { review: NonNullable<CheckView["review"]> }) {
+  if (review.status === "pending") {
+    return (
+      <p className="flex items-center gap-2 rounded-card bg-subtle px-3 py-2 text-secondary text-fg-muted">
+        <Stethoscope aria-hidden className="size-4 shrink-0 text-brand-teal" />
+        A clinician will look over this result. You don’t need to wait for them to act on the advice below.
+      </p>
+    );
+  }
+  const corrected = review.status === "corrected" && review.correctedUrgency;
+  return (
+    <Alert
+      status={corrected ? URGENCY_STATUS[review.correctedUrgency!] : "info"}
+      title={corrected ? `${review.clinician ?? "A clinician"} updated this advice: ${URGENCY_TEXT[review.correctedUrgency!]}` : `Reviewed by ${review.clinician ?? "a clinician"}`}
+    >
+      {review.patientNote && <p>“{review.patientNote}”</p>}
+      <p className="mt-1 text-meta text-fg-muted">
+        {corrected ? "Follow the clinician’s advice where it differs from Nora’s." : "The clinician agreed with Nora’s advice."}
+        {review.reviewedAt ? ` Reviewed ${new Date(review.reviewedAt).toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" })}.` : ""}
+      </p>
+    </Alert>
+  );
+}
+
+export function ResultView({ result, review }: { result: CheckResult; review: CheckView["review"] }) {
   const status = URGENCY_STATUS[result.urgency.level];
   return (
     <div className="flex flex-col gap-4">
+      {review && <ClinicianReview review={review} />}
       <Alert status={status} title={result.urgency.title}>
         <p>{result.urgency.text}</p>
         {result.urgency.reasons.length > 0 && (

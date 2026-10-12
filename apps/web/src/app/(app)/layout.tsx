@@ -1,5 +1,10 @@
-import { AppShell } from "@/components/app-shell";
+import { Suspense } from "react";
+import { AppShell, AppShellFallback } from "@/components/app-shell";
 
 export default function AppLayout({ children }: LayoutProps<"/">) {
-  return <AppShell>{children}</AppShell>;
+  return (
+    <Suspense fallback={<AppShellFallback />}>
+      <AppShell>{children}</AppShell>
+    </Suspense>
+  );
 }

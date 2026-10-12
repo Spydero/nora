@@ -54,6 +54,40 @@
   </tr>
 </table>
 
+### Patient tools
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/screenshots/24-doctors.png" alt="Doctor directory with verified doctors, next openings and booking handoff" /></td>
+    <td width="50%"><img src="docs/screenshots/25-medicines.png" alt="Medicine library with plain-language summaries" /></td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/21-preferences.png" alt="Preferences with health background that distinguishes none from not sure" /></td>
+    <td><img src="docs/screenshots/23-privacy-controls.png" alt="Privacy controls with data download and scheduled deletion" /></td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/22-history.png" alt="Check history with urgency and clinician updates" /></td>
+    <td><img src="docs/screenshots/27-mobile-appointments.png" alt="Appointments tracker on a phone" width="60%" /></td>
+  </tr>
+</table>
+
+### Staff consoles
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/screenshots/29-review-case-signed-off.png" alt="Clinician case view with conversation, evidence trail and a signed-off urgency change" /></td>
+    <td width="50%"><img src="docs/screenshots/28-review-queue.png" alt="Clinician review queue ordered by urgency" /></td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/30-admin-overview.png" alt="Tenant admin overview with activity and feature switches" /></td>
+    <td><img src="docs/screenshots/31-admin-audit-log.png" alt="Audit log of case access and configuration changes" /></td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/32-platform-kill-switches.png" alt="Platform kill switches with a paused booking handoff and its reason" /></td>
+    <td></td>
+  </tr>
+</table>
+
 More in [`docs/screenshots/`](docs/screenshots/).
 
 ## Architecture
@@ -159,17 +193,17 @@ Run the whole stack in containers instead with `pnpm stack:up`.
 
 ### Demo accounts
 
-Every seeded account uses the password **`NoraDemo!2026`**.
+Every seeded account uses the password **`NoraDemo!2026`** and organisation code **`demo`** (or `acme`). Each role lands on its own home page and only sees the tools it is allowed to use.
 
-| Email | Role | Notes |
+| Email | Role | What to try |
 | --- | --- | --- |
-| `patient@demo.nora.local` | Patient | Profile and consent already on file |
+| `patient@demo.nora.local` | Patient | Checks, history, preferences, privacy controls, doctors, appointments, medicines. Shares checks with clinicians. |
 | `priya@demo.nora.local` | Patient | Fresh account — exercises onboarding and consent |
-| `clinician@demo.nora.local` | Clinician | Review queue |
-| `coordinator@demo.nora.local` | Care coordinator | Handoffs and appointments |
-| `admin@demo.nora.local` | Tenant admin | Capabilities, providers, settings |
-| `editor@demo.nora.local` / `approver@demo.nora.local` | Content editor / approver | Four-eyes bundle workflow |
-| `operator@nora.local` | Platform operator | Kill switches |
+| `clinician@demo.nora.local` | Clinician | Review queue: pick up a flagged check, agree or change the urgency, message the patient |
+| `coordinator@demo.nora.local` | Care coordinator | Read-only view of the review queue and cases |
+| `admin@demo.nora.local` | Tenant admin | Feature switches, members, doctor listings, audit log |
+| `editor@demo.nora.local` / `approver@demo.nora.local` | Content editor / approver | Clinical bundle, sources and medicine library status |
+| `operator@nora.local` | Platform operator | Kill switches across all organisations (sign in with `demo`) |
 | `*@acme.nora.local` | Second tenant | Isolation testing |
 
 ## AI configuration
@@ -214,9 +248,12 @@ Tokens, typography, layout and accessibility rules live in [`packages/brand`](pa
 - [x] LangGraph assessment orchestration with read-only research tools and a deterministic safety verifier
 - [x] Checks API with consent gate, outbox worker, retries with template fallback, and polled live stage events
 - [x] Symptom-check workspace end to end: questions, emergency banner, findings with citations, care plan, mobile tabs
+- [x] Preferences, check history, privacy controls (consents, data download, scheduled deletion)
+- [x] Doctor directory with booking handoff, appointment tracker, medicine education library
+- [x] Clinician review queue with sign-off, consent-aware sharing and patient-visible corrections
+- [x] Tenant admin (feature switches, members, doctor listings, audit log), platform kill switches, content overview
 - [ ] Server-sent events with `Last-Event-ID` resume; embedding index and vector search
-- [ ] Profile, provider directory and handoff, medicines education
-- [ ] Clinician review queue, tenant admin, audit, privacy requests, analytics, kill switches
+- [ ] Product analytics events and dashboards
 
 **P1** — voice input, report upload, live scheduling, notifications, clinician-signed guidance, more languages.
 **P2** — personalised medicine guidance, EHR/FHIR integration, payments.

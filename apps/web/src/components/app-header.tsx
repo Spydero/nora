@@ -3,33 +3,34 @@
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
-import { CalendarDays, ChevronDown, ClipboardList, LogOut, Pill, Plus, Stethoscope } from "lucide-react";
+import { ChevronDown, History, LogOut, Plus, ShieldCheck, UserRound } from "lucide-react";
 import { Button, cn, NoraLogo } from "@nora/ui";
 import { useAuth, type Profile } from "@/lib/auth-context";
 import { CURRENT_CHECK_KEY, NEW_CHECK_EVENT } from "@/lib/checks";
 import { initials } from "@/lib/names";
+import { homeFor, navFor, ROLE_LABEL } from "@/lib/roles";
 
-const NAV = [
-  { href: "/", label: "Intake", icon: ClipboardList },
-  { href: "/medicines", label: "Medicines", icon: Pill },
-  { href: "/doctors", label: "Doctors", icon: Stethoscope },
-  { href: "/appointments", label: "Appointments", icon: CalendarDays },
+const PATIENT_MENU = [
+  { href: "/settings", label: "Preferences", icon: UserRound },
+  { href: "/history", label: "History", icon: History },
+  { href: "/privacy", label: "Privacy controls", icon: ShieldCheck },
 ];
 
 function isActive(pathname: string, href: string) {
   return href === "/" ? pathname === "/" : pathname.startsWith(href);
 }
 
-export function MobileNav() {
+export function MobileNav({ profile }: { profile: Profile }) {
   const pathname = usePathname();
+  const items = navFor(profile.roles);
 
   return (
     <nav
       aria-label="Primary mobile"
       className="fixed inset-x-0 bottom-0 z-20 border-t border-line bg-panel pb-[env(safe-area-inset-bottom)] md:hidden"
     >
-      <ul className="grid grid-cols-4">
-        {NAV.map(({ href, label, icon: Icon }) => {
+      <ul className="grid" style={{ gridTemplateColumns: `repeat(${items.length}, minmax(0, 1fr))` }}>
+        {items.map(({ href, label, icon: Icon }) => {
           const active = isActive(pathname, href);
           return (
             <li key={href}>
@@ -37,7 +38,7 @@ export function MobileNav() {
                 href={href}
                 aria-current={active ? "page" : undefined}
                 className={cn(
-                  "flex min-h-16 flex-col items-center justify-center gap-1 text-meta font-medium",
+                  "flex min-h-16 flex-col items-center justify-center gap-1 px-1 text-center text-meta font-medium",
                   active ? "text-brand-teal" : "text-fg-muted hover:text-fg",
                 )}
               >
@@ -61,16 +62,17 @@ function startNewCheck(pathname: string, router: ReturnType<typeof useRouter>) {
 export function AppHeader({ profile }: { profile: Profile }) {
   const pathname = usePathname();
   const router = useRouter();
+  const isPatient = profile.roles.includes("PATIENT");
 
   return (
     <header className="sticky top-0 z-20 h-16 border-b border-line bg-panel">
       <div className="mx-auto flex h-full max-w-[1600px] items-center gap-4 px-4">
-        <Link href="/" className="shrink-0 rounded-control" aria-label="Nora home">
+        <Link href={homeFor(profile.roles)} className="shrink-0 rounded-control" aria-label="Nora home">
           <NoraLogo descriptor={false} />
         </Link>
         <nav aria-label="Primary" className="hidden flex-1 md:block">
           <ul className="flex items-center gap-1">
-            {NAV.map((item) => {
+            {navFor(profile.roles).map((item) => {
               const active = isActive(pathname, item.href);
               return (
                 <li key={item.href}>
@@ -90,10 +92,12 @@ export function AppHeader({ profile }: { profile: Profile }) {
           </ul>
         </nav>
         <div className="ml-auto flex items-center gap-2">
-          <Button variant="secondary" className="max-sm:hidden" onClick={() => startNewCheck(pathname, router)}>
-            <Plus aria-hidden className="size-5" strokeWidth={2} />
-            New check
-          </Button>
+          {isPatient && (
+            <Button variant="secondary" className="max-sm:hidden" onClick={() => startNewCheck(pathname, router)}>
+              <Plus aria-hidden className="size-5" strokeWidth={2} />
+              New check
+            </Button>
+          )}
           <ProfileMenu profile={profile} />
         </div>
       </div>
@@ -104,8 +108,16 @@ export function AppHeader({ profile }: { profile: Profile }) {
 function ProfileMenu({ profile }: { profile: Profile }) {
   const { signOut } = useAuth();
   const router = useRouter();
+  const pathname = usePathname();
   const [open, setOpen] = useState(false);
+  const [openedAt, setOpenedAt] = useState(pathname);
   const ref = useRef<HTMLDivElement>(null);
+  const isPatient = profile.roles.includes("PATIENT");
+
+  if (open && openedAt !== pathname) {
+    setOpen(false);
+    setOpenedAt(pathname);
+  }
 
   useEffect(() => {
     if (!open) return;
@@ -135,7 +147,10 @@ function ProfileMenu({ profile }: { profile: Profile }) {
         type="button"
         aria-haspopup="menu"
         aria-expanded={open}
-        onClick={() => setOpen((value) => !value)}
+        onClick={() => {
+          setOpenedAt(pathname);
+          setOpen((value) => !value);
+        }}
         className="inline-flex min-h-11 items-center gap-2 rounded-control px-2 hover:bg-subtle"
       >
         <span aria-hidden className="grid size-8 place-items-center rounded-full bg-brand-navy text-meta font-semibold text-fg-inverse">
@@ -150,20 +165,32 @@ function ProfileMenu({ profile }: { profile: Profile }) {
           <div className="border-b border-line px-3 pb-3 pt-1">
             <p className="text-secondary font-semibold">{profile.user.displayName}</p>
             <p className="truncate text-meta text-fg-muted">{profile.user.email}</p>
-            <p className="mt-1 text-meta text-fg-muted">{profile.tenant.name}</p>
+            <p className="mt-1 text-meta text-fg-muted">
+              {profile.tenant.name}
+              {!isPatient && ` · ${profile.roles.map((r) => ROLE_LABEL[r]).join(", ")}`}
+            </p>
           </div>
-          {["Preferences", "History", "Privacy controls"].map((label) => (
-            <button key={label} role="menuitem" type="button" disabled className="flex min-h-11 w-full items-center rounded-control px-3 text-left text-secondary text-fg-muted">
-              {label}
-            </button>
-          ))}
+          {isPatient &&
+            PATIENT_MENU.map(({ href, label, icon: Icon }) => (
+              <Link
+                key={href}
+                href={href}
+                role="menuitem"
+                aria-current={pathname.startsWith(href) ? "page" : undefined}
+                onClick={() => setOpen(false)}
+                className="flex min-h-11 w-full items-center gap-2 rounded-control px-3 text-left text-secondary font-medium hover:bg-subtle aria-[current=page]:bg-subtle"
+              >
+                <Icon aria-hidden className="size-4 text-fg-muted" />
+                {label}
+              </Link>
+            ))}
           <button
             role="menuitem"
             type="button"
             onClick={handleSignOut}
             className="flex min-h-11 w-full items-center gap-2 rounded-control px-3 text-left text-secondary font-medium hover:bg-subtle"
           >
-            <LogOut aria-hidden className="size-4" />
+            <LogOut aria-hidden className="size-4 text-fg-muted" />
             Sign out
           </button>
         </div>

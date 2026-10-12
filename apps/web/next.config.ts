@@ -11,6 +11,11 @@ const nextConfig: NextConfig = {
   outputFileTracingRoot: path.resolve(process.cwd(), "../.."),
   transpilePackages: ["@nora/ui", "@nora/brand"],
   poweredByHeader: false,
+  experimental: {
+    // Signed-in pages render only after the browser confirms the session and role, so they
+    // cannot be instant; validate only segments that opt in with `export const instant`.
+    instantInsights: { validationLevel: "manual-warning" },
+  },
   turbopack: {
     rules: {
       "*.css": {

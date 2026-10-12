@@ -12,6 +12,19 @@ import { DEFAULT_CAPABILITIES } from '../src/tenancy/capabilities.js';
 
 const DEMO_PASSWORD = 'NoraDemo!2026';
 
+const IST_OFFSET_MS = 330 * 60_000;
+const HALF_HOUR_MS = 30 * 60_000;
+
+/** First half-hour slot at least `hours` from now that falls within clinic hours (09:30–18:30 IST). */
+function clinicSlot(from: number, hours: number): Date {
+  let local = Math.ceil((from + hours * 3_600_000 + IST_OFFSET_MS) / HALF_HOUR_MS) * HALF_HOUR_MS;
+  const minuteOfDay = (local % 86_400_000) / 60_000;
+  const dayStart = local - minuteOfDay * 60_000;
+  if (minuteOfDay < 9.5 * 60) local = dayStart + 9.5 * 3_600_000;
+  else if (minuteOfDay > 18.5 * 60) local = dayStart + 86_400_000 + 9.5 * 3_600_000;
+  return new Date(local - IST_OFFSET_MS);
+}
+
 const prisma = new PrismaClient({ adapter: new PrismaPg({ connectionString: process.env.DATABASE_URL! }) });
 
 interface DemoUser {
@@ -198,7 +211,7 @@ async function seedProviders(tenantId: string, verifierId: string) {
       feeAmount: p.feeMinor,
       currency: 'INR',
       accessibility: clinic.accessibility,
-      nextAvailableAt: p.nextAvailableInHours === null ? null : new Date(now + p.nextAvailableInHours * 3_600_000),
+      nextAvailableAt: p.nextAvailableInHours === null ? null : clinicSlot(now, p.nextAvailableInHours),
       scheduleUpdatedAt: p.nextAvailableInHours === null ? null : new Date(),
       bio: `${p.specialty} at ${clinic.name}. Synthetic demo profile.`,
     };
