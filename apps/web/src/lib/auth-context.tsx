@@ -14,7 +14,12 @@ export type Role =
 
 export interface Profile {
   user: { id: string; email: string; displayName: string };
-  tenant: { id: string; slug: string; name: string };
+  tenant: {
+    id: string;
+    slug: string;
+    name: string;
+    emergency: { number: string; crisisLine: { name: string; number: string } | null };
+  };
   roles: Role[];
   session: { id: string; idleTimeoutMinutes: number };
 }

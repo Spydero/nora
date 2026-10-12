@@ -274,6 +274,7 @@ export function buildAssessmentGraph(deps: AssessmentDeps) {
     const candidates = concerns.flatMap((c) => c.explanations);
     const codes = candidates.map((c) => c.code) as [string, ...string[]];
     const payload = {
+      writeTo: 'The person who sent this, as "you". Start the summary with "You".',
       case: caseSummary(s.bundle, s.facts, s.concerns, s.urgency, s.context.profileLines),
       requiredNextStep: s.bundle.urgencyActions[s.urgency!.level].title,
       candidates: candidates.map((c) => ({ code: c.code, label: c.label, description: c.plain })),

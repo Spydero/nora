@@ -37,15 +37,19 @@
 
 <table>
   <tr>
-    <td width="66%"><img src="docs/screenshots/03-patient-workspace.png" alt="Patient workspace with intake and findings panels" /></td>
-    <td width="34%"><img src="docs/screenshots/05-mobile-workspace.png" alt="Patient workspace on a phone with bottom navigation" /></td>
+    <td width="66%"><img src="docs/screenshots/14-check-result.png" alt="Sore-throat check result with urgency, cited reasons and ranked explanations" /></td>
+    <td width="34%"><img src="docs/screenshots/17-mobile-findings.png" alt="Check result on a phone, opened on the Findings tab" /></td>
   </tr>
   <tr>
-    <td><img src="docs/screenshots/04-profile-menu.png" alt="Profile menu showing the patient and organisation" /></td>
-    <td><img src="docs/screenshots/06-mobile-next-steps.png" alt="Mobile next steps with urgent-symptom guidance" /></td>
+    <td><img src="docs/screenshots/15-emergency-escalation.png" alt="Chest pain escalated to an emergency banner with a call button" /></td>
+    <td><img src="docs/screenshots/18-mobile-care-plan.png" alt="Care plan on a phone" /></td>
   </tr>
   <tr>
-    <td><img src="docs/screenshots/09-register-validation.png" alt="Registration form with inline validation" /></td>
+    <td><img src="docs/screenshots/13-check-question.png" alt="Nora asking a follow-up question during a check" /></td>
+    <td><img src="docs/screenshots/05-mobile-workspace.png" alt="Patient workspace on a phone with bottom navigation" /></td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/19-consent-before-first-check.png" alt="Consent notice shown before the first check" /></td>
     <td><img src="docs/screenshots/07-tablet-next-steps-drawer.png" alt="Tablet layout with the next steps drawer" /></td>
   </tr>
 </table>
@@ -207,11 +211,12 @@ Tokens, typography, layout and accessibility rules live in [`packages/brand`](pa
 - [x] Versioned clinical bundle, deterministic rules engine and sentinel evaluation
 - [x] Synthetic India seed: 2 tenants, 11 users, 6 concerns, knowledge library, 18 providers, 25 medicines
 - [x] Rule-based red-flag extractor
-- [ ] LangGraph assessment orchestration with read-only research tools
-- [ ] Checks API, outbox worker and live stage events (SSE)
-- [ ] Consent and profile, provider directory and handoff, medicines education
+- [x] LangGraph assessment orchestration with read-only research tools and a deterministic safety verifier
+- [x] Checks API with consent gate, outbox worker, retries with template fallback, and polled live stage events
+- [x] Symptom-check workspace end to end: questions, emergency banner, findings with citations, care plan, mobile tabs
+- [ ] Server-sent events with `Last-Event-ID` resume; embedding index and vector search
+- [ ] Profile, provider directory and handoff, medicines education
 - [ ] Clinician review queue, tenant admin, audit, privacy requests, analytics, kill switches
-- [ ] Workspace UI end to end
 
 **P1** — voice input, report upload, live scheduling, notifications, clinician-signed guidance, more languages.
 **P2** — personalised medicine guidance, EHR/FHIR integration, payments.

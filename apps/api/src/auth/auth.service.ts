@@ -219,9 +219,15 @@ export class AuthService {
       where: { id: principal.membershipId },
       include: { tenant: true, user: true },
     });
+    const settings = (membership.tenant.settings ?? {}) as { emergencyNumber?: string; crisisLine?: { name: string; number: string } };
     return {
       user: { id: membership.user.id, email: membership.user.email, displayName: membership.user.displayName },
-      tenant: { id: membership.tenant.id, slug: membership.tenant.slug, name: membership.tenant.name },
+      tenant: {
+        id: membership.tenant.id,
+        slug: membership.tenant.slug,
+        name: membership.tenant.name,
+        emergency: { number: settings.emergencyNumber ?? '112', crisisLine: settings.crisisLine ?? null },
+      },
       roles: membership.roles,
       session: { id: principal.sessionId, idleTimeoutMinutes: this.idleTimeoutMinutes(membership.roles) },
     };

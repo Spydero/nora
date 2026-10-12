@@ -47,6 +47,17 @@ describe('rule-based extractor', () => {
     expect(facts('my temp is 36.9')).toMatchObject({ temperature_c: 36.9, fever: 'ABSENT' });
   });
 
+  it('matches phrases with one extra word in between', () => {
+    expect(facts('Sore throat with a fever of 38.5, swollen neck glands. No cough or runny nose.')).toMatchObject({
+      sore_throat: 'PRESENT',
+      swollen_glands: 'PRESENT',
+      cough: 'ABSENT',
+      runny_nose: 'ABSENT',
+    });
+    const msg = 'My Swollen Neck Glands hurt';
+    expect(extractWithRules(demoBundle, msg).find((o) => o.factKey === 'swollen_glands')?.quote).toBe('Swollen Neck Glands');
+  });
+
   it('keeps quotes as exact substrings of the original message', () => {
     const msg = 'Burning When I Pee since yesterday';
     for (const o of extractWithRules(demoBundle, msg)) expect(msg).toContain(o.quote);

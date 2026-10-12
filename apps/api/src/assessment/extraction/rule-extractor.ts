@@ -98,6 +98,12 @@ function painScore(text: string): { value: number; index: number; length: number
   return v <= 10 ? { value: v, index: m.index, length: m[0].length } : null;
 }
 
+/** Multi-word phrases tolerate one extra word between their words ("swollen neck glands", "runny or blocked nose"). */
+function phrasePattern(phrase: string): RegExp {
+  const words = phrase.toLowerCase().split(/\s+/).map(escape);
+  return new RegExp(`(^|[^a-z])${words.join(String.raw`\s+(?:[a-z'-]+\s+)?`)}(?![a-z])`);
+}
+
 /**
  * Deterministic synonym + negation extractor. Always runs (also alongside the
  * LLM) so emergency phrases are never missed because a model was unavailable
@@ -112,15 +118,14 @@ export function extractWithRules(bundle: BundleContent, message: string): Observ
     const phrases = [...def.synonyms].sort((a, b) => b.length - a.length);
     for (const clause of clauses(lower)) {
       for (const phrase of phrases) {
-        const re = new RegExp(`(^|[^a-z])${escape(phrase.toLowerCase())}(?![a-z])`);
-        const m = re.exec(clause.text);
+        const m = phrasePattern(phrase).exec(clause.text);
         if (!m) continue;
         const at = m.index + m[1]!.length;
         const assertion = classify(clause.text, at);
         const obs: Observation = {
           factKey,
           state: assertion === 'negated' ? 'ABSENT' : 'PRESENT',
-          quote: quoteFrom(message, clause.start + at, phrase.length),
+          quote: quoteFrom(message, clause.start + at, m[0].length - m[1]!.length),
           assertion,
           source: 'rules',
         };

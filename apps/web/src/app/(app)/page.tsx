@@ -1,10 +1,15 @@
 "use client";
 
-import { useState, type ReactNode } from "react";
-import { ClipboardList, FileSearch, ListChecks, Send } from "lucide-react";
-import { Button, Card, cn, Panel, StatusBadge } from "@nora/ui";
+import { useState } from "react";
+import { ListChecks } from "lucide-react";
+import { Button, cn } from "@nora/ui";
+import { EmergencyBanner } from "@/components/check/emergency-banner";
+import { FindingsPanel } from "@/components/check/findings-panel";
+import { IntakePanel } from "@/components/check/intake-panel";
+import { NextStepsPanel } from "@/components/check/next-steps-panel";
 import { useAuth } from "@/lib/auth-context";
 import { firstName } from "@/lib/names";
+import { useCheck } from "@/lib/use-check";
 
 type View = "intake" | "findings" | "next";
 
@@ -14,24 +19,44 @@ const VIEWS: { id: View; label: string }[] = [
   { id: "next", label: "Next steps" },
 ];
 
+const FALLBACK_EMERGENCY = { number: "112", crisisLine: null };
+
 export default function WorkspacePage() {
   const { state } = useAuth();
+  const controller = useCheck();
+  const { check } = controller;
   const [view, setView] = useState<View>("intake");
   const [drawerOpen, setDrawerOpen] = useState(false);
   const givenName = state.profile ? firstName(state.profile.user.displayName) : undefined;
+  const emergency = check?.emergency ?? state.profile?.tenant.emergency ?? FALLBACK_EMERGENCY;
+  const isEmergency = check?.urgency === "emergency";
+  const shownKey = `${check?.id ?? ""}:${check?.result?.createdAt ?? ""}`;
+  const [seenKey, setSeenKey] = useState(shownKey);
+  if (seenKey !== shownKey) {
+    setSeenKey(shownKey);
+    if (!check) setView("intake");
+    else if (check.result && typeof window !== "undefined" && window.matchMedia("(max-width: 767px)").matches) setView("findings");
+  }
+  const [findingsSeenKey, setFindingsSeenKey] = useState<string | null>(null);
+  if (view === "findings" && check?.result && findingsSeenKey !== shownKey) setFindingsSeenKey(shownKey);
+  const unseenResult = !!check?.result && view !== "findings" && findingsSeenKey !== shownKey;
 
   return (
-    <main className="mx-auto flex h-[calc(100dvh-4rem)] max-w-[1600px] max-md:h-[calc(100dvh-8rem)] flex-col gap-4 p-4">
+    <main className="mx-auto flex h-[calc(100dvh-4rem)] max-w-[1600px] flex-col gap-4 p-4 max-md:h-[calc(100dvh-8rem)]">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-page-title font-semibold">Hello{givenName ? `, ${givenName}` : ""}</h1>
-          <p className="text-secondary text-fg-muted">Describe what you are experiencing and Nora will ask a few questions.</p>
+          <p className="text-secondary text-fg-muted">
+            {check?.title ? `Current check: ${check.title}` : "Describe what you are experiencing and Nora will ask a few questions."}
+          </p>
         </div>
         <Button variant="secondary" className="xl:hidden max-md:hidden" onClick={() => setDrawerOpen(true)}>
           <ListChecks aria-hidden className="size-5" />
           Next steps
         </Button>
       </div>
+
+      {isEmergency && check && <EmergencyBanner check={check} />}
 
       <div role="tablist" aria-label="Workspace views" className="grid grid-cols-3 gap-1 rounded-control bg-subtle p-1 md:hidden">
         {VIEWS.map((item) => (
@@ -41,20 +66,25 @@ export default function WorkspacePage() {
             type="button"
             aria-selected={view === item.id}
             onClick={() => setView(item.id)}
-            className={cn(
-              "min-h-11 rounded-control text-secondary font-medium",
-              view === item.id ? "bg-panel text-brand-navy shadow-sm" : "text-fg-muted",
-            )}
+            className={cn("min-h-11 rounded-control text-secondary font-medium", view === item.id ? "bg-panel text-brand-navy shadow-sm" : "text-fg-muted")}
           >
             {item.label}
+            {item.id === "findings" && unseenResult && <span aria-label="new" className="ml-1.5 inline-block size-2 rounded-full bg-brand-teal" />}
           </button>
         ))}
       </div>
 
       <div className="grid min-h-0 flex-1 gap-4 md:grid-cols-[28fr_44fr] xl:grid-cols-[28fr_44fr_28fr]">
-        <IntakePanel className={cn(view !== "intake" && "max-md:hidden")} />
-        <FindingsPanel className={cn(view !== "findings" && "max-md:hidden")} />
-        <NextStepsPanel className={view === "next" ? "md:max-xl:hidden" : "max-xl:hidden"} />
+        <IntakePanel
+          controller={controller}
+          className={cn(view !== "intake" && "max-md:hidden")}
+          onShowFindings={() => {
+            setView("findings");
+            document.getElementById("findings-title")?.scrollIntoView({ behavior: "smooth" });
+          }}
+        />
+        <FindingsPanel check={check} className={cn(view !== "findings" && "max-md:hidden")} />
+        <NextStepsPanel check={check} emergency={emergency} className={view === "next" ? "md:max-xl:hidden" : "max-xl:hidden"} />
       </div>
 
       {drawerOpen && (
@@ -71,85 +101,10 @@ export default function WorkspacePage() {
                 Close
               </Button>
             </div>
-            <NextStepsPanel className="flex-1" />
+            <NextStepsPanel check={check} emergency={emergency} className="flex-1" />
           </div>
         </div>
       )}
     </main>
-  );
-}
-
-function IntakePanel({ className }: { className?: string }) {
-  return (
-    <Panel title="Intake" titleId="intake-title" className={className}>
-      <div className="flex h-full flex-col">
-        <div className="flex-1">
-          <EmptyState
-            icon={<ClipboardList aria-hidden className="size-6" />}
-            title="Start a check"
-            body='Describe your main symptom in your own words, for example: "Sore throat and fever since yesterday."'
-          />
-        </div>
-        <form className="mt-4 flex flex-col gap-2" onSubmit={(event) => event.preventDefault()}>
-          <label htmlFor="symptom" className="text-secondary font-medium">
-            What would you like help with?
-          </label>
-          <textarea
-            id="symptom"
-            rows={3}
-            maxLength={8000}
-            disabled
-            placeholder="Symptom intake arrives with F04"
-            className="resize-none rounded-control border border-line-strong bg-panel p-3 text-body placeholder:text-fg-muted disabled:bg-subtle"
-          />
-          <Button type="submit" disabled className="self-end">
-            <Send aria-hidden className="size-4" />
-            Continue
-          </Button>
-        </form>
-      </div>
-    </Panel>
-  );
-}
-
-function FindingsPanel({ className }: { className?: string }) {
-  return (
-    <Panel title="Findings" titleId="findings-title" className={className} actions={<StatusBadge status="info">No assessment yet</StatusBadge>}>
-      <EmptyState
-        icon={<FileSearch aria-hidden className="size-6" />}
-        title="Your assessment will appear here"
-        body="Based on the information you provide, Nora shows possible explanations, how certain they are, and the sources used."
-      />
-    </Panel>
-  );
-}
-
-function NextStepsPanel({ className }: { className?: string }) {
-  return (
-    <Panel title="Next steps" titleId="next-title" className={className}>
-      <div className="flex flex-col gap-3">
-        <Card>
-          <p className="text-card-title font-semibold">Urgent symptoms</p>
-          <p className="mt-1 text-secondary text-fg-muted">
-            If you have severe chest pain, trouble breathing, or signs of a stroke, call your local emergency number now.
-          </p>
-        </Card>
-        <EmptyState
-          icon={<ListChecks aria-hidden className="size-6" />}
-          title="Care plan"
-          body="Recommended actions, timeframes and doctors will be listed here after your assessment."
-        />
-      </div>
-    </Panel>
-  );
-}
-
-function EmptyState({ icon, title, body }: { icon: ReactNode; title: string; body: string }) {
-  return (
-    <div className="flex flex-col items-start gap-2 rounded-card border border-dashed border-line p-4">
-      <span className="grid size-10 place-items-center rounded-control bg-subtle text-brand-teal">{icon}</span>
-      <p className="text-card-title font-semibold">{title}</p>
-      <p className="text-secondary text-fg-muted">{body}</p>
-    </div>
   );
 }

@@ -5,6 +5,8 @@ import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { AccessTokenGuard } from './auth/access-token.guard.js';
 import { AuthModule } from './auth/auth.module.js';
 import { CsrfGuard } from './auth/csrf.guard.js';
+import { ChecksModule } from './checks/checks.module.js';
+import { ConsentModule } from './consent/consent.module.js';
 import { correlationIdMiddleware } from './common/correlation-id.middleware.js';
 import { HttpExceptionFilter } from './common/http-exception.filter.js';
 import { validateEnv } from './config/env.js';
@@ -17,6 +19,8 @@ import { InfraModule } from './infra.module.js';
     ThrottlerModule.forRoot([{ ttl: 60_000, limit: 300 }]),
     InfraModule,
     AuthModule,
+    ConsentModule,
+    ChecksModule,
   ],
   controllers: [HealthController],
   providers: [

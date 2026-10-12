@@ -9,6 +9,14 @@ export interface EmergencyContacts {
   crisisLine: { name: string; number: string } | null;
 }
 
+/** Labels such as "swollen, tender neck glands" contain commas, so they go last where they still read clearly. */
+export function listText(items: string[]): string {
+  if (items.length < 2) return items.join('');
+  const ordered = [...items.filter((i) => !i.includes(',')), ...items.filter((i) => i.includes(','))];
+  const sep = ordered.filter((i) => i.includes(',')).length > 1 ? '; ' : ', ';
+  return `${ordered.slice(0, -1).join(sep)} and ${ordered.at(-1)}`;
+}
+
 export function concernDefs(bundle: BundleContent, codes: string[]): ConcernDef[] {
   return bundle.concerns.filter((c) => codes.includes(c.code));
 }
@@ -78,16 +86,17 @@ export function templateDraft(bundle: BundleContent, facts: FactMap, concerns: C
   const symptoms = Object.entries(facts)
     .filter(([k, f]) => f.state === 'PRESENT' && bundle.facts[k]?.type === 'boolean')
     .map(([k]) => label(k));
-  const duration = facts.duration_days?.state === 'PRESENT' ? ` for about ${facts.duration_days.value} day(s)` : '';
+  const days = facts.duration_days?.state === 'PRESENT' ? Number(facts.duration_days.value) : null;
+  const duration = days === null ? '' : days < 1 ? ' since today' : ` for about ${days} ${days === 1 ? 'day' : 'days'}`;
 
   return {
-    summary: `You described ${symptoms.length ? symptoms.join(', ') : 'your symptoms'}${duration}. Based on your answers and Nora's clinical rules, the recommended next step is: ${bundle.urgencyActions[level].title.toLowerCase()}. The possible explanations below are not a diagnosis — a clinician can confirm what is going on.`,
+    summary: `You described ${symptoms.length ? listText(symptoms) : 'your symptoms'}${duration}. Based on your answers and Nora's clinical rules, the recommended next step is: ${bundle.urgencyActions[level].title.toLowerCase()}. The possible explanations below are not a diagnosis — a clinician can confirm what is going on.`,
     explanations: scored.map(({ e, support, against, score }, i) => ({
       code: e.code,
       likelihood: likelihood(score, i),
       rationale: [
-        support.length ? `Fits with: ${support.map(label).join(', ')}.` : 'No specific features point strongly towards this.',
-        against.length ? `Less consistent with: ${against.map(label).join(', ')}.` : '',
+        support.length ? `Fits with: ${listText(support.map(label))}.` : 'No specific features point strongly towards this.',
+        against.length ? `Less consistent with: ${listText(against.map(label))}.` : '',
       ]
         .filter(Boolean)
         .join(' '),

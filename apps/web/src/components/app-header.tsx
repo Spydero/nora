@@ -6,6 +6,7 @@ import { useEffect, useRef, useState } from "react";
 import { CalendarDays, ChevronDown, ClipboardList, LogOut, Pill, Plus, Stethoscope } from "lucide-react";
 import { Button, cn, NoraLogo } from "@nora/ui";
 import { useAuth, type Profile } from "@/lib/auth-context";
+import { CURRENT_CHECK_KEY, NEW_CHECK_EVENT } from "@/lib/checks";
 import { initials } from "@/lib/names";
 
 const NAV = [
@@ -51,8 +52,15 @@ export function MobileNav() {
   );
 }
 
+function startNewCheck(pathname: string, router: ReturnType<typeof useRouter>) {
+  sessionStorage.removeItem(CURRENT_CHECK_KEY);
+  window.dispatchEvent(new Event(NEW_CHECK_EVENT));
+  if (pathname !== "/") router.push("/");
+}
+
 export function AppHeader({ profile }: { profile: Profile }) {
   const pathname = usePathname();
+  const router = useRouter();
 
   return (
     <header className="sticky top-0 z-20 h-16 border-b border-line bg-panel">
@@ -82,7 +90,7 @@ export function AppHeader({ profile }: { profile: Profile }) {
           </ul>
         </nav>
         <div className="ml-auto flex items-center gap-2">
-          <Button variant="secondary" className="max-sm:hidden">
+          <Button variant="secondary" className="max-sm:hidden" onClick={() => startNewCheck(pathname, router)}>
             <Plus aria-hidden className="size-5" strokeWidth={2} />
             New check
           </Button>
