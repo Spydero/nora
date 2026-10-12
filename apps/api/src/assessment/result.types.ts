@@ -19,6 +19,8 @@ export interface FindingItem {
   value?: number | null;
   unit?: string;
   source: string;
+  /** The patient's own words, when Nora read this from their message. */
+  said?: string;
 }
 
 export interface AnswerConflict {
@@ -26,8 +28,12 @@ export interface AnswerConflict {
   label: string;
   answered: 'yes' | 'no';
   mentioned: 'yes' | 'no';
-  /** A confirmed answer is kept, except that a warning sign mentioned later is treated as present to be safe. */
-  resolution: 'kept_answer' | 'treated_as_present';
+  /**
+   * A warning sign mentioned later is treated as present to be safe; other
+   * disagreements are asked again; an answer is kept only when it can't be
+   * asked again safely.
+   */
+  resolution: 'kept_answer' | 'treated_as_present' | 'ask_again';
   /** Set when the earlier answer came from the patient's health profile rather than this check. */
   answeredIn?: 'profile';
 }
@@ -46,17 +52,36 @@ export interface ResultContent {
   };
   summary: string;
   concerns: { code: string; label: string }[];
-  /** Symptoms in this consultation only; `history` holds long-term conditions and medicines that mattered for it. */
-  findings: { present: FindingItem[]; absent: FindingItem[]; unknown: FindingItem[]; history?: { present: FindingItem[]; absent: FindingItem[]; unknown: FindingItem[] } };
-  explanations: {
+  /**
+   * Symptoms in this consultation only; `history` holds long-term conditions
+   * and medicines that mattered for it, and `exposures` events such as a bite,
+   * with their own timeline.
+   */
+  findings: {
+    present: FindingItem[];
+    absent: FindingItem[];
+    unknown: FindingItem[];
+    history?: { present: FindingItem[]; absent: FindingItem[]; unknown: FindingItem[] };
+    exposures?: FindingItem[];
+  };
+  /** Approved general health information about the concern, word for word from the bundle. It is not about the patient and ranks nothing. */
+  information?: {
+    code: string;
+    title: string;
+    text: string;
+    citations: string[];
+    /** Shown when the information sounds reassuring but the urgency rules found warning signs. */
+    caution?: string;
+  }[];
+  /** Results saved before Nora stopped ranking possible causes. Kept so old records still open; never produced now. */
+  explanations?: {
     code: string;
     label: string;
     plain: string;
     clinical: string;
-    likelihood: 'more_likely' | 'possible' | 'less_likely';
-    rationale: string;
+    likelihood?: 'more_likely' | 'possible' | 'less_likely';
+    rationale?: string;
     citations: string[];
-    /** Shown when the approved description sounds reassuring but the urgency rules found warning signs. */
     caution?: string;
   }[];
   /** Later messages that disagreed with an earlier yes/no answer, and what Nora did about it. */

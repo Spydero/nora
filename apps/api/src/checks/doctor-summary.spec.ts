@@ -4,7 +4,7 @@ import { buildDoctorSummary, type DoctorSummaryInput } from './doctor-summary.js
 const result = {
   schemaVersion: '1',
   status: 'COMPLETED',
-  urgency: { level: 'soon', title: 'See a doctor within 24–48 hours', text: '', reasons: [{ ruleId: 'r_strep_features', message: 'Fever with swollen glands and no cough can suggest a bacterial throat infection.', citations: ['E1'] }] },
+  urgency: { level: 'soon', title: 'See a doctor within 24–48 hours', text: '', reasons: [{ ruleId: 'r_strep_features', message: 'A sore throat with fever, swollen neck glands and no cough should be checked by a doctor.', citations: ['E1'] }] },
   summary: 'You have a sore throat with fever.',
   concerns: [{ code: 'sore_throat', label: 'Sore throat' }],
   findings: {
@@ -13,7 +13,7 @@ const result = {
     unknown: [{ key: 'tonsil_pus', label: 'White patches or pus on the tonsils', source: 'answer' }],
     history: { present: [{ key: 'chronic_lung_disease', label: 'Long-term lung condition', source: 'profile' }], absent: [], unknown: [] },
   },
-  explanations: [{ code: 'bacterial_pharyngitis', label: 'Bacterial throat infection', plain: '', clinical: 'Streptococcal pharyngitis', likelihood: 'more_likely', rationale: '', citations: ['E1'] }],
+  information: [{ code: 'info_sore_throat', title: 'About sore throats', text: 'Most sore throats get better on their own within a week.', citations: ['E1'] }],
   answerConflicts: [{ key: 'blood_thinners', label: 'Takes blood thinners', answered: 'no', mentioned: 'yes', resolution: 'treated_as_present', answeredIn: 'profile' }],
   carePlan: [],
   questionsForClinician: ['Do I need a throat swab?'],
@@ -62,15 +62,42 @@ describe('doctor summary', () => {
     expect(section(s, 'history')).toContain('Relevant to this consultation: Long-term lung condition');
     expect(section(s, 'assessment')).toContain('Urgency: See a doctor within 24–48 hours');
     expect(section(s, 'assessment')).not.toContain('Bacterial');
-    expect(section(s, 'explanation')).toContain('Bacterial throat infection (Streptococcal pharyngitis): more likely');
+    expect(section(s, 'explanation')).toContain('- About sore throats');
     expect(section(s, 'explanation')).toContain('not a diagnosis');
     expect(section(s, 'explanation')).toContain('cannot change the urgency');
+    expect(s.sections.map((x) => x.text).join('\n')).not.toMatch(/likely|Streptococcal|Bacterial/i);
     expect(section(s, 'recommendations')).toContain('Next step: See a doctor within 24–48 hours');
     expect(section(s, 'answers')).toBe('- Have you had a cough? — No');
     expect(section(s, 'changes')).toContain('profile does not list it');
     expect(section(s, 'sources').split('\n')).toHaveLength(1);
     expect(section(s, 'notes')).toBe('');
     expect(section(s, 'disclaimer')).toMatch(/may have edited/);
+  });
+
+  it('leaves out the possible causes stored by earlier versions without changing the record', () => {
+    const legacy = { ...result, explanations: [{ code: 'bacterial_pharyngitis', label: 'Bacterial throat infection', plain: '', clinical: 'Streptococcal pharyngitis', likelihood: 'more_likely', rationale: '', citations: ['E1'] }] } as ResultContent;
+    const s = buildDoctorSummary({ ...input, result: legacy });
+    expect(s.sections.map((x) => x.text).join('\n')).not.toMatch(/Bacterial|Streptococcal|more likely/i);
+    expect(section(s, 'explanation')).toContain('earlier version of Nora');
+    expect(legacy.explanations).toHaveLength(1);
+  });
+
+  it('keeps exposures apart from symptoms and quotes the patient’s own words', () => {
+    const s = buildDoctorSummary({
+      ...input,
+      result: {
+        ...result,
+        findings: {
+          ...result.findings,
+          present: [{ key: 'fever', label: 'Fever', source: 'rules', said: 'fever since yesterday' }, { key: 'duration_days', label: 'How long', value: 1, unit: 'days', source: 'rules', said: 'fever since yesterday' }],
+          exposures: [{ key: 'animal_bite', label: 'Bitten or scratched by an animal', source: 'rules', said: 'a dog bit me 5 days ago' }],
+        },
+      },
+    });
+    expect(section(s, 'symptoms')).toContain('Fever');
+    expect(section(s, 'symptoms')).toContain('fever since yesterday');
+    expect(section(s, 'symptoms')).not.toMatch(/bit/i);
+    expect(s.sections.map((x) => x.text).join('\n')).toMatch(/a dog bit me 5 days ago/);
   });
 
   it('uses India time for every date, including the file name', () => {

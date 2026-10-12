@@ -15,6 +15,8 @@ export interface FactValue {
   value?: number | null;
   /** Where the fact came from: profile, answer, rules, llm, correction. */
   source?: string;
+  /** The patient's own words it was read from, keeping severity and timing ("really bad cough for 2 weeks"). */
+  quote?: string;
 }
 
 export type FactMap = Record<string, FactValue>;
@@ -24,6 +26,8 @@ export interface TriggeredRule {
   level: UrgencyLevel;
   message: string;
   sourceKey: string;
+  /** The passage of the source that supports the message, when the content names it. */
+  sourceHeading?: string;
   careItems: string[];
 }
 
@@ -71,11 +75,14 @@ export function evaluate(condition: Condition, facts: FactMap): boolean {
  * Specific concerns win; a general one (fever, a cold) is used only when
  * nothing specific matches, and then only the first, so a fever with a sore
  * throat is assessed as a sore throat rather than as two overlapping checks.
+ * Exposure concerns (a bite) are added to the symptoms, never in place of them.
  */
 export function detectConcerns(bundle: BundleContent, facts: FactMap): ConcernDef[] {
   const matched = bundle.concerns.filter((c) => c.triggers.some((t) => facts[t]?.state === 'PRESENT'));
-  const specific = matched.filter((c) => !c.onlyAlone);
-  return specific.length ? specific : matched.slice(0, 1);
+  const symptoms = matched.filter((c) => c.kind !== 'exposure');
+  const exposures = matched.filter((c) => c.kind === 'exposure');
+  const specific = symptoms.filter((c) => !c.onlyAlone);
+  return [...(specific.length ? specific : symptoms.slice(0, 1)), ...exposures];
 }
 
 /** Not yet asked or told; an "I'm not sure" or a skip is an answer, not an open fact. */
@@ -181,7 +188,14 @@ export function unresolvedSafety(bundle: BundleContent, facts: FactMap, concerns
  */
 export function evaluateUrgency(bundle: BundleContent, facts: FactMap, concerns: ConcernDef[]): UrgencyOutcome {
   const fired = applicableRules(bundle, concerns).filter((r) => evaluate(r.when, facts));
-  const triggered: TriggeredRule[] = fired.map((r) => ({ ruleId: r.id, level: r.level, message: r.message, sourceKey: r.sourceKey, careItems: r.careItems }));
+  const triggered: TriggeredRule[] = fired.map((r) => ({
+    ruleId: r.id,
+    level: r.level,
+    message: r.message,
+    sourceKey: r.sourceKey,
+    ...(r.sourceHeading ? { sourceHeading: r.sourceHeading } : {}),
+    careItems: r.careItems,
+  }));
   const covered = new Set(fired.flatMap((r) => conditionFacts(r.when)));
   const present = (k: string) => facts[k]?.state === 'PRESENT';
 
@@ -201,7 +215,7 @@ export function evaluateUrgency(bundle: BundleContent, facts: FactMap, concerns:
     ]
       .filter(Boolean)
       .join(' ');
-    triggered.push({ ruleId: `warn:${id}`, level, message, sourceKey: item.sourceKey, careItems: [] });
+    triggered.push({ ruleId: `warn:${id}`, level, message, sourceKey: item.sourceKey, ...(item.sourceHeading ? { sourceHeading: item.sourceHeading } : {}), careItems: [] });
   }
 
   for (const [key, def] of Object.entries(bundle.facts)) {
@@ -223,6 +237,7 @@ export function evaluateUrgency(bundle: BundleContent, facts: FactMap, concerns:
       level: UNRESOLVED_SAFETY_FLOOR,
       message: `Nora couldn’t rule out ${labels.length > 1 ? `${labels.slice(0, -1).join('; ')} or ${labels.at(-1)}` : labels[0]}. These can be warning signs, so a doctor should check.`,
       sourceKey: 'src_red_flags',
+      sourceHeading: 'When you are not sure',
       careItems: [],
     });
   }
@@ -290,7 +305,7 @@ export const QUESTION_REASON_TEXT: Record<QuestionReason, string> = {
   urgency: 'Could change how soon you should be seen',
   required: 'Needed to assess this properly',
   history: 'Your health background',
-  detail: 'Helps tell possible causes apart',
+  detail: 'Helps describe your symptoms',
   closing: 'Anything else (optional)',
 };
 
@@ -305,8 +320,7 @@ export interface PlannedQuestion {
 
 const LEVEL_WEIGHT: Record<UrgencyLevel, number> = { emergency: 1, urgent: 2, soon: 3, routine: 5, self_care: 9 };
 const REQUIRED_WEIGHT = 4;
-const DETAIL_WEIGHT = 7;
-/** Hedged mentions of a warning sign are cleared up straight after the warning-sign questions; other hedged mentions before routine detail. */
+/** Hedged or contradicted mentions of a warning sign are cleared up straight after the warning-sign questions; others before routine questions. */
 const CLARIFY_CRITICAL_WEIGHT = 0.25;
 const CLARIFY_WEIGHT = 3.5;
 const EPISODE_WEIGHT = 0.5;
@@ -314,11 +328,11 @@ const EPISODE_WEIGHT = 0.5;
 /**
  * Open facts worth asking about, weighted by what their answer could change:
  * a rule or "get help if…" warning that could still fire above the current
- * urgency, a concern's required facts, then the features that tell its
- * candidate explanations apart. A fact whose answer can no longer change
- * anything gets no weight, so it is not asked. Open facts that no remaining
- * question asks about are assumed to stay unconfirmed, so a rule that needs
- * one of them doesn't make its other facts worth asking.
+ * urgency, then a concern's required facts. Nora doesn't ask questions to
+ * guess at a cause, so a fact whose answer can no longer change the urgency
+ * gets no weight and is not asked. Open facts that no remaining question asks
+ * about are assumed to stay unconfirmed, so a rule that needs one of them
+ * doesn't make its other facts worth asking.
  */
 function factWeights(bundle: BundleContent, facts: FactMap, concerns: ConcernDef[], askable: ReadonlySet<string>): Map<string, number> {
   const weights = new Map<string, number>();
@@ -336,8 +350,6 @@ function factWeights(bundle: BundleContent, facts: FactMap, concerns: ConcernDef
   for (const r of applicableRules(bundle, concerns)) consider(r.when, r.level);
   for (const id of new Set(concerns.flatMap((c) => c.careItems))) bundle.careItems[id]?.escalate.forEach((e) => consider(e.when, e.level));
   concerns.flatMap((c) => c.requiredFacts).forEach((k) => bump(k, REQUIRED_WEIGHT));
-  const candidates = concerns.flatMap((c) => c.explanations);
-  if (candidates.length > 1) candidates.flatMap((e) => [...e.supportingFacts, ...e.againstFacts]).forEach((k) => bump(k, DETAIL_WEIGHT));
   for (const key of unclearFacts(facts)) bump(key, bundle.facts[key]?.critical ? CLARIFY_CRITICAL_WEIGHT : CLARIFY_WEIGHT);
   return weights;
 }
@@ -365,15 +377,14 @@ function reasonFor(q: QuestionDef, weight: number, unclear: boolean): QuestionRe
   if (q.purpose === 'safety') return 'safety';
   if (unclear) return 'clarify';
   if (q.purpose === 'history') return 'history';
-  if (weight === 0 || weight === REQUIRED_WEIGHT) return 'required';
-  return weight < DETAIL_WEIGHT ? 'urgency' : 'detail';
+  return weight === 0 || weight === REQUIRED_WEIGHT ? 'required' : 'urgency';
 }
 
 /**
  * Every question still worth asking, in the order Nora should ask them.
  * There is no question budget: the plan is empty only when the concern's
  * warning signs have been screened, its required facts are known, and no
- * open fact could still change the urgency or tell the explanations apart.
+ * open fact could still change the urgency.
  * Questions already answered, or whose facts the patient already told Nora
  * (in their own words or from their profile), are never planned.
  */

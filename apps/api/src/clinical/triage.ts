@@ -25,7 +25,7 @@ const gapOf = (state: string | undefined): SafetyGap | null => {
 /**
  * Nora's urgency decision. Only bundle rules and patient facts go in, so the
  * level, its reasons and the gaps in safety information are the same whether
- * or not any AI model runs; AI explanations are written afterwards and cannot
+ * or not any AI model runs; AI summaries are written afterwards and cannot
  * change them.
  */
 export function triage(bundle: BundleContent, facts: FactMap, concerns: ConcernDef[]): TriageDecision {

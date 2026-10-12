@@ -22,7 +22,7 @@ const MOHFW = 'Ministry of Health and Family Welfare, India (Tele-MANAS)';
 const SUMMARY = 'Summary written for Nora from the linked public page; not reviewed by a clinician';
 const version = '2.0';
 
-const ALL_CONCERNS = ['sore_throat', 'headache', 'urinary', 'cough', 'back_pain', 'abdominal_pain', 'skin_rash', 'ear_pain', 'dizziness', 'cold_flu', 'gastro', 'fever'];
+const ALL_CONCERNS = ['sore_throat', 'headache', 'urinary', 'cough', 'back_pain', 'abdominal_pain', 'skin_rash', 'ear_pain', 'dizziness', 'cold_flu', 'gastro', 'fever', 'animal_bite'];
 
 export const demoKnowledge: KnowledgeSeed[] = [
   {
@@ -38,6 +38,7 @@ export const demoKnowledge: KnowledgeSeed[] = [
       { heading: 'Meningitis warning signs', text: 'Fever with a stiff neck, sensitivity to light, or a rash that does not fade when a glass is pressed against it can be signs of meningitis. This is a medical emergency.' },
       { heading: 'Same-day care', text: 'Very high fever (39.5 °C or above), coughing up blood, new breathlessness, or severe pain should be assessed by a doctor the same day.' },
       { heading: 'When you are not sure', text: 'If you cannot rule out a warning sign, or are unsure whether your symptoms are serious, get medical advice rather than waiting.' },
+      { heading: 'Uncontrolled bleeding', text: 'Bleeding that will not stop when firm pressure is applied is an emergency: call 112.' },
     ],
   },
   {
@@ -50,7 +51,7 @@ export const demoKnowledge: KnowledgeSeed[] = [
     version,
     chunks: [
       { heading: 'Common causes', text: 'Most sore throats are caused by viruses, often with a runny nose and cough, and get better within about a week without antibiotics.' },
-      { heading: 'Bacterial throat infection', text: 'Fever, swollen tender neck glands, pus on the tonsils and the absence of cough make a bacterial (streptococcal) throat infection more likely. A clinician can decide whether testing or antibiotics are needed.' },
+      { heading: 'When a sore throat needs checking', text: 'A sore throat with fever, swollen tender neck glands or pus on the tonsils, and no cough, should be checked by a clinician, who can decide whether testing or antibiotics are needed.' },
       { heading: 'Self-care', text: 'Warm salt-water gargles, drinking plenty of water, cool or soft foods, rest and avoiding smoke can ease symptoms. A pharmacist can advise on over-the-counter pain relief.' },
       { heading: 'Same-day care', text: 'A sore throat with a very high temperature or shivering, signs of dehydration, or a weakened immune system (for example from diabetes or chemotherapy) should be checked by a doctor the same day.' },
       { heading: 'Warning signs', text: 'Being unable to swallow, drooling, a high-pitched sound when breathing or difficulty breathing can mean serious swelling in the throat and need emergency care. A sore throat that does not improve after a week should be checked.' },
@@ -168,7 +169,7 @@ export const demoKnowledge: KnowledgeSeed[] = [
     concernCodes: ['dizziness'],
     version,
     chunks: [
-      { heading: 'Light-headedness', text: 'Feeling faint or light-headed when standing up is often caused by a brief drop in blood pressure, dehydration, missed meals or illness. Lying down until it passes and getting up slowly helps.' },
+      { heading: 'Light-headedness', text: 'Feeling faint or light-headed when standing up is often caused by a brief drop in blood pressure, dehydration, missed meals or illness. Lying down until it passes and getting up slowly helps. Avoid driving, climbing ladders or using machinery while you feel dizzy.' },
       { heading: 'Vertigo', text: 'A spinning sensation brought on by head movement usually comes from the inner ear (for example BPPV or labyrinthitis). It can come with nausea and usually settles over days to weeks.' },
       { heading: 'Warning signs', text: 'Dizziness with face drooping, arm weakness, slurred speech, chest pain, fainting, or a racing or irregular heartbeat can mean a heart or brain problem and needs urgent or emergency care.' },
     ],
@@ -230,6 +231,33 @@ export const demoKnowledge: KnowledgeSeed[] = [
       { heading: 'Medicines', text: 'Ask a pharmacist or doctor before taking any new medicine, especially if you take other medicines, are pregnant, or have kidney, liver or stomach problems.' },
       { heading: 'Higher-risk groups', text: 'A fever can become serious more quickly if your immune system is weakened (for example by chemotherapy, long-term steroids or HIV) or you are 65 or over, so get medical advice the same day.' },
       { heading: 'Persistent symptoms', text: 'A high temperature that is not getting better with home treatment, symptoms that last more than two weeks, or severe pain should be reviewed by a doctor.' },
+    ],
+  },
+  {
+    sourceKey: 'src_rabies',
+    title: 'Rabies and animal bites',
+    publisher: WHO,
+    url: 'https://www.who.int/news-room/fact-sheets/detail/rabies',
+    licence: SUMMARY,
+    concernCodes: ['animal_bite'],
+    version,
+    chunks: [
+      { heading: 'How rabies spreads', text: 'Rabies spreads to people through bites or scratches from infected animals, most often dogs. Once symptoms appear it is almost always fatal, but it can be prevented with prompt care after a bite or scratch.' },
+      { heading: 'First aid', text: 'Wash the wound straight away and thoroughly with soap and running water for about 15 minutes.' },
+      { heading: 'Care after a bite', text: 'After a bite or scratch from a dog or another animal that could carry rabies, see a doctor as soon as possible, even if the wound looks minor. You may need rabies vaccination and wound care.' },
+    ],
+  },
+  {
+    sourceKey: 'src_snakebite',
+    title: 'Snakebite',
+    publisher: WHO,
+    url: 'https://www.who.int/news-room/fact-sheets/detail/snakebite-envenoming',
+    licence: SUMMARY,
+    concernCodes: ['animal_bite'],
+    version,
+    chunks: [
+      { heading: 'Emergency care', text: 'A snakebite can be life-threatening and needs emergency hospital care, even if the person feels well at first.' },
+      { heading: 'First aid', text: 'Keep the person calm and still, keep the bitten limb still, and remove rings or tight items. Do not cut or suck the wound or apply a tight band, and get to hospital quickly.' },
     ],
   },
   {

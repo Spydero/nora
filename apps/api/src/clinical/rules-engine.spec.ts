@@ -176,7 +176,15 @@ describe('question selection', () => {
     const plan = planQuestions(demoBundle, facts, detectConcerns(demoBundle, facts), new Set(['q_ws_throat'])).map((p) => p.id);
     expect(plan).not.toContain('q_duration');
     expect(plan).not.toContain('q_fever');
-    expect(plan).toContain('q_cough');
+  });
+
+  it('does not ask questions whose answer could only point towards a cause', () => {
+    const facts: FactMap = { ...adult, sore_throat: { state: 'PRESENT' }, duration_days: { state: 'PRESENT', value: 2 }, fever: { state: 'ABSENT' } };
+    const plan = planQuestions(demoBundle, facts, detectConcerns(demoBundle, facts), new Set(['q_ws_throat']));
+    expect(plan.map((p) => p.id)).not.toContain('q_cough');
+    expect(plan.every((p) => p.reason !== 'detail')).toBe(true);
+    const withFever = { ...facts, fever: { state: 'PRESENT' as const } };
+    expect(planQuestions(demoBundle, withFever, detectConcerns(demoBundle, withFever), new Set(['q_ws_throat'])).map((p) => p.id)).toContain('q_temperature');
   });
 
   it('asks conditional follow-ups only when their condition holds', () => {

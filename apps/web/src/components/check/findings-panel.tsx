@@ -1,7 +1,6 @@
 "use client";
 
-import { useState } from "react";
-import { AlertTriangle, FileSearch, History, Loader2, ShieldCheck, Sparkles, Stethoscope } from "lucide-react";
+import { AlertTriangle, BookOpen, FileSearch, History, Loader2, ShieldCheck, Sparkles, Stethoscope } from "lucide-react";
 import { Alert, Card, cn, Panel, StatusBadge, type Status } from "@nora/ui";
 import { formatDate } from "@/lib/care";
 import type { CheckResult, CheckView, UrgencyLevel } from "@/lib/checks";
@@ -15,24 +14,24 @@ export const URGENCY_STATUS: Record<UrgencyLevel, Status> = {
   self_care: "success",
 };
 
-const LIKELIHOOD: Record<CheckResult["explanations"][number]["likelihood"], { label: string; className: string }> = {
-  more_likely: { label: "More likely", className: "bg-brand-navy text-fg-inverse" },
-  possible: { label: "Possible", className: "bg-subtle text-fg" },
-  less_likely: { label: "Less likely", className: "border border-line text-fg-muted" },
-};
-
 const GENERATOR: Record<CheckResult["generator"], string> = {
-  llm: "Urgency decided by Nora’s clinical rules. Explanations written by AI from approved sources and checked by Nora; AI can’t change the urgency.",
-  template: "Urgency decided by Nora’s clinical rules. Explanations from Nora’s standard approved guidance.",
-  template_fallback: "Urgency decided by Nora’s clinical rules. The AI explanation was unavailable or didn’t pass Nora’s checks, so Nora’s approved guidance is shown instead.",
+  llm: "Urgency decided by Nora’s clinical rules. Summary written by AI from what you told Nora and checked by Nora; AI can’t change the urgency.",
+  template: "Urgency decided by Nora’s clinical rules. Summary in Nora’s standard wording.",
+  template_fallback: "Urgency decided by Nora’s clinical rules. The AI summary was unavailable or didn’t pass Nora’s checks, so Nora’s standard wording is shown instead.",
   rules: "Nora’s clinical rules decided this result; no AI was used.",
 };
 
 const EXPLAINED_BY: Record<CheckResult["generator"], string> = {
-  llm: "Explained by AI · it can’t change your urgency",
-  template: "From Nora’s approved guidance",
-  template_fallback: "From Nora’s approved guidance",
+  llm: "Written by AI · it can’t change your urgency",
+  template: "Nora’s standard wording",
+  template_fallback: "Nora’s standard wording",
   rules: "From Nora’s clinical rules",
+};
+
+const CONFLICT_OUTCOME: Record<NonNullable<CheckResult["answerConflicts"]>[number]["resolution"], string> = {
+  treated_as_present: "Because it can be a warning sign, Nora treated it as present to be safe.",
+  kept_answer: "Nora kept your answer.",
+  ask_again: "Nora asked you again so it has the right answer.",
 };
 
 const SAFETY_GAP: Record<NonNullable<CheckResult["triage"]>["missingSafety"][number]["gap"], string> = {
@@ -72,7 +71,7 @@ export function FindingsPanel({ check, className }: { check: CheckView | null; c
           <EmptyState
             icon={<FileSearch aria-hidden className="size-6" />}
             title="Your assessment will appear here"
-            body="Based on the information you provide, Nora shows possible explanations, how certain they are, and the sources used."
+            body="Nora will show how soon to get care, a summary of what you told it, general health information and the sources used. It does not diagnose."
           />
         )
       ) : (
@@ -118,15 +117,15 @@ export function ResultView({
   result,
   review,
   parent = null,
-  defaultTerms = "plain",
 }: {
   result: CheckResult;
   review: CheckView["review"];
   parent?: CheckView["parent"];
-  defaultTerms?: "plain" | "clinical";
 }) {
   const status = URGENCY_STATUS[result.urgency.level];
-  const [terms, setTerms] = useState(defaultTerms);
+  const information = result.information ?? [];
+  const exposures = result.findings.exposures ?? [];
+  const ownWords = [...result.findings.present, ...exposures].filter((f) => f.said);
   const usedRecords = result.memory?.filter((m) => m.used) ?? [];
   const missingSafety = result.triage?.missingSafety ?? [];
   return (
@@ -192,47 +191,33 @@ export function ResultView({
         <p className="text-body">{result.summary}</p>
       </section>
 
-      {result.explanations.length > 0 && (
-        <section aria-labelledby="expl-h" className="flex flex-col gap-2">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <h3 id="expl-h" className="text-card-title font-semibold">
-              Possible explanations
-            </h3>
-            <div role="radiogroup" aria-label="Wording" className="flex rounded-control bg-subtle p-0.5 text-meta font-medium">
-              {(["plain", "clinical"] as const).map((t) => (
-                <button
-                  key={t}
-                  type="button"
-                  role="radio"
-                  aria-checked={terms === t}
-                  onClick={() => setTerms(t)}
-                  className={cn("rounded-control px-2.5 py-1", terms === t ? "bg-panel text-brand-navy shadow-sm" : "text-fg-muted")}
-                >
-                  {t === "plain" ? "Plain words" : "Medical terms"}
-                </button>
-              ))}
-            </div>
-          </div>
-          <p className="text-meta text-fg-muted">These are possibilities to discuss with a doctor, not a diagnosis.</p>
-          {result.explanations.map((e) => (
-            <Card key={e.code} className="flex flex-col gap-1.5">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <p className="font-semibold">{e.label}</p>
-                <span className={cn("rounded-control px-2 py-0.5 text-meta font-medium", LIKELIHOOD[e.likelihood].className)}>{LIKELIHOOD[e.likelihood].label}</span>
-              </div>
-              <p className="text-secondary text-fg-muted">{terms === "clinical" && e.clinical ? e.clinical : e.plain}</p>
+      {information.length > 0 && (
+        <section aria-labelledby="info-h" className="flex flex-col gap-2">
+          <h3 id="info-h" className="flex items-center gap-1.5 text-card-title font-semibold">
+            <BookOpen aria-hidden className="size-4 text-brand-teal" />
+            General health information
+          </h3>
+          <p className="text-meta text-fg-muted">General facts from approved sources about this kind of symptom. They are not about your case and are not a diagnosis.</p>
+          {information.map((i) => (
+            <Card key={i.code} className="flex flex-col gap-1.5">
+              <p className="font-semibold">{i.title}</p>
               <p className="text-secondary">
-                {e.rationale.replace(/\s*\(?\bE\d+\b(,\s*E\d+)*\)?/g, "")} <Citations ids={e.citations} />
+                {i.text} <Citations ids={i.citations} />
               </p>
-              {e.caution && (
+              {i.caution && (
                 <p className="flex items-start gap-1.5 text-secondary font-medium text-warning">
                   <AlertTriangle aria-hidden className="mt-0.5 size-4 shrink-0" />
-                  {e.caution}
+                  {i.caution}
                 </p>
               )}
             </Card>
           ))}
         </section>
+      )}
+      {(result.explanations?.length ?? 0) > 0 && (
+        <p className="rounded-card bg-subtle px-3 py-2 text-secondary text-fg-muted">
+          This check was made by an earlier version of Nora that suggested possible causes. They are no longer shown because Nora does not diagnose. Your urgency advice above is unchanged.
+        </p>
       )}
 
       <section aria-labelledby="told-h" className="flex flex-col gap-2">
@@ -242,6 +227,19 @@ export function ResultView({
         <FactChips label="You have" items={result.findings.present} tone="present" />
         <FactChips label="You don’t have" items={result.findings.absent} tone="absent" />
         <FactChips label="Not sure or skipped" items={result.findings.unknown} tone="unknown" />
+        <FactChips label="Exposures you mentioned (not symptoms)" items={exposures} tone="present" />
+        {ownWords.length > 0 && (
+          <details className="text-secondary">
+            <summary className="cursor-pointer text-meta font-medium text-fg-muted">What Nora read from your messages</summary>
+            <ul className="mt-1 flex flex-col gap-1">
+              {ownWords.map((f) => (
+                <li key={f.key}>
+                  <span className="font-medium">{f.label}</span> <span className="text-fg-muted">from “{f.said}”</span>
+                </li>
+              ))}
+            </ul>
+          </details>
+        )}
         {result.answerConflicts?.map((c) => (
           <p key={c.key} className="flex items-start gap-2 rounded-card bg-warning-bg px-3 py-2 text-secondary">
             <AlertTriangle aria-hidden className="mt-0.5 size-4 shrink-0 text-warning" />
@@ -249,7 +247,7 @@ export function ResultView({
               <span>
                 Your health profile {c.answered === "yes" ? "lists" : "doesn’t list"} {c.label.toLowerCase()}, but your message{" "}
                 {c.mentioned === "yes" ? "mentioned it" : "suggested you don’t have it"}.{" "}
-                {c.resolution === "treated_as_present" ? "Nora used what you said for this check." : "To be safe, Nora kept what your profile says."}{" "}
+                {c.resolution === "treated_as_present" ? "Nora used what you said for this check." : c.resolution === "ask_again" ? "Nora asked you about it to be sure." : "To be safe, Nora kept what your profile says."}{" "}
                 <a href="/settings" className="font-medium text-brand-teal underline-offset-2 hover:underline">
                   Update your profile
                 </a>
@@ -257,7 +255,7 @@ export function ResultView({
             ) : (
               <span>
                 You answered “{c.answered === "yes" ? "Yes" : "No"}” to {c.label.toLowerCase()}, but a later message {c.mentioned === "yes" ? "mentioned it" : "suggested you don’t have it"}.{" "}
-                {c.resolution === "treated_as_present" ? "Because it can be a warning sign, Nora treated it as present to be safe." : "Nora kept your answer."}
+                {CONFLICT_OUTCOME[c.resolution]}
               </span>
             )}
           </p>

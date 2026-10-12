@@ -18,7 +18,7 @@
 </p>
 
 > [!WARNING]
-> **Not a medical device. Not for real patients.** All clinical content in this repository (rules, questions, explanations, knowledge sources, providers, medicines) is **synthetic demo data** that has not been clinically validated. It exists to exercise the software end to end.
+> **Not a medical device. Not for real patients.** All clinical content in this repository (rules, questions, general information, knowledge sources, providers, medicines) is **synthetic demo data** that has not been clinically validated. It exists to exercise the software end to end.
 
 ---
 
@@ -26,27 +26,30 @@
 
 | Principle | How it is enforced |
 | --- | --- |
-| **Rules decide urgency, never the model** | A rule-based triage service (`clinical/triage.ts`) evaluates a versioned clinical bundle on every input and returns the urgency, its reasons and any missing safety-critical information. Emergencies short-circuit the pipeline before any LLM call. The AI (Gemini or OpenRouter) only explains the result, the possible causes and approved self-care; it can't change the triage decision, and the app labels the two separately. |
+| **Rules decide urgency, never the model** | A rule-based triage service (`clinical/triage.ts`) evaluates a versioned clinical bundle on every input and returns the urgency, its reasons and any missing safety-critical information. Emergencies short-circuit the pipeline before any LLM call. The AI (Gemini or OpenRouter) only words a summary of what the patient reported and what the next step means; it can't change the triage decision, and the app labels the two separately. |
 | **Earlier checks are asked about, never assumed** | When a recent check covered the same problem, Nora shows it and asks whether this is the same ongoing episode, got better and came back, is a new episode after recovering, or the patient isn't sure. Only that answer counts: "again" in free text never decides it, and a new or unsure episode is assessed on its own. |
 | **Unsure mentions are clarified, not guessed** | Hedged text ("could be a fever, not sure") is never recorded as a symptom. Nora tells the patient what it understood and asks the matching question, even if it was answered "no" earlier. |
 | **The patient gets the last word** | Every check ends with the optional "Is there anything else you'd like us to know?". Nora reads the answer like any message and it goes into the doctor summary in the patient's own words. |
-| **Bounded explanations** | The model may only rank *approved candidate explanations* from the active bundle; it cannot invent diagnoses. |
-| **Every claim is cited** | A read-only research agent retrieves approved passages; drafts are verified so each explanation cites retrieved evidence IDs. |
+| **Information, not diagnosis** | Nora is a health-information and care-navigation tool. It doesn't name, rank or suggest causes. Results show the urgency, a summary of what the patient reported, approved general information about the concern (marked as not about the patient) and care steps. The verifier rejects drafts that guess at causes ("could be", "more likely", "sounds like") as well as diagnoses. |
+| **Citations support their claims** | Each rule, care step and information topic cites the passage that says the same thing: the one its content names, or else the one sharing enough of its words. A step no passage supports, such as "book within 24–48 hours", shows no citation rather than an unrelated one. |
 | **Verify, retry, fall back** | Drafts with uncited claims, diagnosis or dosing language are rejected and retried, then replaced by approved template content. |
-| **Questions until complete, not a count** | There is no question limit. Nora keeps asking until the concern's warning signs are screened, required facts are known, and nothing left could change the urgency or tell likely causes apart. Questions are ranked by what they could change: warning signs first, then anything that could raise urgency, then required details, then distinguishing features. It skips anything already said in free text, answered earlier or known from the profile, and never repeats a question. |
+| **Questions until complete, not a count** | There is no question limit. Nora keeps asking until the concern's warning signs are screened, required facts are known, and nothing left could change the urgency. Nora doesn't ask questions to guess at a cause. Questions are ranked by what they could change: warning signs first, then anything that could raise urgency, then required details. It skips anything already said in free text, answered earlier or known from the profile, and never repeats a question. |
 | **Not sure is never reassuring** | Every symptom is tracked as present, absent or unknown. A warning sign answered "not sure" or skipped keeps urgency at "see a doctor soon" or higher, is listed as missing, and marks the check incomplete. |
 | **Memory without guesswork** | Nora remembers only what the patient confirmed: profile conditions, medicines and allergies, past checks and upcoming appointments. Memory is built deterministically and given to the model as numbered facts; the verifier rejects any history claim that doesn't cite one. |
 | **Each consultation stands alone** | The patient profile (long-term conditions, regular medicines) is kept apart from this consultation's symptoms. Earlier checks reach the AI only when they're about the same problem or are being followed up. The verifier rejects drafts that describe a symptom the patient hasn't reported in this check. |
 | **Reliable sources** | Guidance passages summarise and link to the NHS, the WHO and India's Ministry of Health (Tele-MANAS). Only the newest approved version of each source is used, and every source links to the original page. |
 | **Survives provider outages** | OpenRouter is primary and Google Gemini takes over automatically on rate limits, quota exhaustion or outages. If every provider fails, patients get approved template guidance and urgency is unaffected. |
 | **Warning signs outrank routine advice** | If a monitoring item's own "get help if…" condition is already true, urgency rises to that level. Any critical warning sign that no rule covers lifts urgency to at least "see a doctor soon". Self-care is removed at urgent and above; at "soon" it's shown only as comfort measures "until you're seen". |
-| **Answers are never silently changed** | Extraction can't overwrite a yes/no the patient gave. If a later message contradicts an answer, Nora keeps the answer and tells the patient. The one exception is a critical sign answered "no" and then described, which is treated as present to be safe. |
-| **Contradictions are caught before display** | The verifier rejects AI summaries that deny something the patient said, assert something they denied, misquote numbers, or use reassuring or "settles on its own" wording when a doctor is needed. It also rejects wording that's more urgent than the decided level. A final check compares the whole result (summary, explanations and care steps) against its urgency and sends any conflict for clinician review. |
+| **Answers are never silently changed** | Extraction can't overwrite a yes/no the patient gave. If a later message contradicts an answer, Nora tells the patient and asks the question again. A warning sign answered "no" and then described is treated as present to be safe; a warning sign answered "yes" stays present. |
+| **Exposures and timelines kept apart** | A bite, a meal or a trip is recorded as an exposure, not a symptom, with its own date. "A dog bit me 5 days ago, fever since yesterday" gives a 5-day-old bite and a 1-day fever; "diabetes for 10 years" is history, never a symptom duration. Each finding keeps the patient's own words. Animal bites go to same-day care and snake bites to emergency care. |
+| **Contradictions are caught before display** | The verifier rejects AI summaries that deny something the patient said, assert something they denied, misquote numbers, or use reassuring or "settles on its own" wording when a doctor is needed. It also rejects wording that's more urgent than the decided level. A final check compares the whole result (summary, general information and care steps) against its urgency and sends any conflict for clinician review. |
 | **Unverified AI is replaced, not trusted** | If an AI draft fails verification, Nora shows approved template wording instead, keeps the rules' urgency and queues the check for clinician review. |
 | **Defence in depth** | A deterministic red-flag extractor always runs beside the LLM extractor; a critical finding it sees can never be dropped by the model. |
 | **Tenant isolation & privacy** | Tenant-scoped data access, append-only consent, audit trails, idle timeouts, rotating refresh tokens and CSRF protection. |
 
 ## Screenshots
+
+Some result screenshots predate bundle `2026.10-demo.8` and still show the "possible explanations" section, which has since been replaced by general health information.
 
 <table>
   <tr>
@@ -295,7 +298,7 @@ Nora talks to models through [OpenRouter](https://openrouter.ai) first and falls
 - When a daily quota runs out, it is paused until the quota resets: midnight UTC for OpenRouter, midnight Pacific time for Gemini.
 - For other rate limits, it is paused for two minutes.
 
-Gemini has no decision model, so explanations are ranked by the rules instead. Pause state lives in memory and resets when the API restarts. Operators can see each provider's status on the **Platform operations** page.
+Gemini has no decision model, so the optional emergency cross-check is skipped; urgency always comes from the rules. Pause state lives in memory and resets when the API restarts. Operators can see each provider's status on the **Platform operations** page.
 
 **Memory.** Before research, Nora builds a numbered list of facts (M1…Mn) from the patient's confirmed profile, recent checks and upcoming appointments. The model may reference these facts but never writes memory. Any claim about the patient's history that doesn't cite a fact is rejected by the verifier.
 
@@ -324,7 +327,8 @@ The AI gets this consultation's symptoms and the health background as separate l
 - medical history, medicines and allergies;
 - every question Nora asked, with the answer given;
 - urgency (decided by the clinical rules) and its reasons, including warning signs not yet ruled out;
-- the AI explanation and possible causes, labelled as unable to change the urgency;
+- exposures such as a bite, kept apart from symptoms, with the patient's own words;
+- the patient-facing summary and the general information shown, labelled as unable to change the urgency (possible causes stored by earlier versions are left out);
 - recommendations and what to watch for;
 - any clinician correction, and questions for the doctor;
 - anything else the patient wanted to add;
@@ -336,7 +340,9 @@ All dates use India Standard Time, on the server and in the browser. At `/summar
 
 ```bash
 pnpm --filter @nora/api test          # rules engine, extraction, orchestration (scripted model),
-                                      # adaptive questioning, memory separation, doctor summary
+                                      # adaptive questioning, memory separation, doctor summary,
+                                      # timelines, exposures, citations, triage consistency, access
+pnpm --filter @nora/web test          # doctor summary PDF
 pnpm --filter @nora/brand test        # token contrast + CSS/token sync
 pnpm typecheck && pnpm lint
 ```
@@ -372,7 +378,8 @@ Tokens, typography, layout and accessibility rules live in [`packages/brand`](pa
 - [x] OpenRouter → Gemini failover with quota-aware pausing; platform health for operators
 - [x] Tenant analytics with 7/30/90-day ranges; counts under 5, and any figure that would reveal one, are withheld
 - [x] Completeness-based adaptive questioning with free text at any point; profile kept separate from consultations; NHS/WHO/MoHFW-sourced guidance; editable doctor summary
-- [x] Rule-based triage service separate from AI explanations; earlier-check episode question; hedged mentions clarified; optional closing question; downloadable PDF summary; consistent IST dates
+- [x] Rule-based triage service separate from AI summaries; earlier-check episode question; hedged mentions clarified; optional closing question; downloadable PDF summary; consistent IST dates
+- [x] Non-diagnostic results: general information instead of ranked causes; exposure pathway (animal and snake bites); exposure versus symptom timelines; contradictions re-asked; claim-level citations; consent checked on every input
 - [ ] Server-sent events with `Last-Event-ID` resume; embedding index and vector search
 
 **P1** — voice input, report upload, live scheduling, notifications, clinician-signed guidance, more languages.

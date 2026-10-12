@@ -1,18 +1,36 @@
 import { type UrgencyLevel, urgencyRank } from '../../clinical/bundle.schema.js';
 import { aboveLevelIssues, type AnswerFacts, answerIssues, urgencyIssues } from './consistency.js';
 
+/**
+ * What a model may write: a summary of what the patient reported and what the
+ * rule-set next step means, plus questions for a clinician. Possible causes
+ * are not part of it; general information is approved content shown as is.
+ */
 export interface Draft {
   summary: string;
-  explanations: { code: string; likelihood: 'more_likely' | 'possible' | 'less_likely'; rationale: string; citations: string[] }[];
   questionsForClinician: string[];
   /** Memory item IDs (e.g. "M2") the text relies on. */
   memoryRefs: string[];
 }
 
+/** Conditions and causes a draft must not attach to the patient's symptoms. */
+const CONDITION =
+  '(infections?|virus(es)?|viral|bacteria|bacterial|strep|tonsillitis|pharyngitis|migraines?|tension[- ]type|appendicitis|cystitis|uti|kidney infection|pyelonephritis|pneumonia|bronchitis|meningitis|sciatica|gastroenteritis|stomach bug|food poisoning|indigestion|acidity|gastritis|dermatitis|eczema|allerg(y|ies|ic reaction)|hives|urticaria|otitis|ear infection|vertigo|bppv|labyrinthitis|flu|influenza|common cold|dengue|malaria|typhoid|covid|stroke|heart attack|sepsis|anaphylaxis|cancer|tumou?r|rabies)';
+
 const DIAGNOSIS = [
   /\bdiagnos(is|ed|e|ing)\b/i,
   /\byou (definitely|certainly|clearly) have\b/i,
-  /\b(you have|you've got|this is|it is|it's) (a |an )?(\w+ ){0,3}(infection|migraine|appendicitis|cystitis|pneumonia|meningitis|sciatica|gastroenteritis|tonsillitis|pharyngitis|strep|uti|bronchitis|stroke|heart attack)\b/i,
+  new RegExp(`\\b(you have|you've got|this is|it is|it's) (a |an )?(\\w+ ){0,3}${CONDITION}\\b`, 'i'),
+];
+
+/** Guessing at a cause, or ranking causes, is diagnosis by another name. */
+const SPECULATION = [
+  /\b(most|more|less|least|highly) likely\b/i,
+  /\blikelihood\b/i,
+  new RegExp(
+    `\\b(may|might|could|can|likely|probably|possibly|perhaps|suggests?|suggestive of|points? (to|towards)|consistent with|sounds like|looks like|indicates?|due to|caused by|because of|signs? of|considers?|consider|rule out)\\b[^.?!]{0,50}\\b${CONDITION}\\b`,
+    'i',
+  ),
 ];
 
 /** Saying what Nora is not ("this is not a diagnosis") is required wording, not a diagnosis. */
@@ -48,7 +66,6 @@ const HISTORY_CLAIM = [
 ];
 
 export interface VerifyContext {
-  candidateCodes: ReadonlySet<string>;
   citationIds: ReadonlySet<string>;
   urgency: UrgencyLevel;
   /** IDs of the memory items given to the model. */
@@ -84,26 +101,18 @@ function groundingIssues(draft: Draft, texts: string[], ctx: VerifyContext): str
 /** Deterministic safety and provenance checks applied to every draft. */
 export function verifyDraft(draft: Draft, ctx: VerifyContext): string[] {
   const issues: string[] = [];
-  if (draft.explanations.length === 0) issues.push('At least one candidate explanation is required.');
+  for (const c of new Set(draft.summary.match(/\bE\d+\b/g) ?? [])) if (!ctx.citationIds.has(c)) issues.push(`Citation ${c} was not retrieved in this run.`);
 
-  const seen = new Set<string>();
-  for (const e of draft.explanations) {
-    if (!ctx.candidateCodes.has(e.code)) issues.push(`Explanation "${e.code}" is not an approved candidate.`);
-    if (seen.has(e.code)) issues.push(`Explanation "${e.code}" is listed twice.`);
-    seen.add(e.code);
-    if (e.citations.length === 0) issues.push(`Explanation "${e.code}" has no citation.`);
-    for (const c of e.citations) if (!ctx.citationIds.has(c)) issues.push(`Citation ${c} was not retrieved in this run.`);
-  }
-
-  const texts = [draft.summary, ...draft.explanations.map((e) => e.rationale), ...draft.questionsForClinician];
+  const texts = [draft.summary, ...draft.questionsForClinician];
   for (const t of texts) {
     if (DIAGNOSIS.some((re) => re.test(t.replace(DISCLAIMER, '')))) issues.push(`Diagnostic language is not allowed: "${t.slice(0, 80)}"`);
+    if (SPECULATION.some((re) => re.test(t))) issues.push(`Guessing at or ranking possible causes is not allowed: "${t.slice(0, 80)}"`);
     if (DOSING.some((re) => re.test(t))) issues.push(`Medicine dosing or instructions are not allowed: "${t.slice(0, 80)}"`);
     if (urgencyRank(ctx.urgency) >= urgencyRank('soon') && FALSE_REASSURANCE.some((re) => re.test(t))) {
       issues.push(`Text contradicts the required urgency: "${t.slice(0, 80)}"`);
     }
   }
-  const statements = [draft.summary, ...draft.explanations.map((e) => e.rationale)];
+  const statements = [draft.summary];
   for (const t of statements) {
     if (MEDICINE_INSTRUCTION.test(t)) issues.push(`Medicine dosing or instructions are not allowed: "${t.slice(0, 80)}"`);
     if (THIRD_PERSON.some((re) => re.test(t))) issues.push(`Address the patient directly as "you": "${t.slice(0, 80)}"`);

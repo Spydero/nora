@@ -4,7 +4,7 @@
  */
 export const CAPABILITIES = {
   assessment: { label: 'Symptom assessment', platformFlag: 'assessment', phase: 'P0' },
-  ai_generation: { label: 'AI-generated explanations', platformFlag: 'ai_generation', phase: 'P0' },
+  ai_generation: { label: 'AI-written summaries', platformFlag: 'ai_generation', phase: 'P0' },
   medicines_education: { label: 'Medicine education', platformFlag: null, phase: 'P0' },
   provider_directory: { label: 'Provider directory', platformFlag: null, phase: 'P0' },
   external_handoff: { label: 'External booking handoff', platformFlag: 'provider_handoff', phase: 'P0' },

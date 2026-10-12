@@ -55,7 +55,10 @@ export class CaseStore {
   async facts(db: Db, sessionId: string): Promise<FactMap> {
     const rows = await db.caseFact.findMany({ where: { sessionId, supersededAt: null }, orderBy: { createdAt: 'asc' } });
     return Object.fromEntries(
-      rows.map((r) => [r.key, { state: r.state as FactStateName, value: typeof r.value === 'number' ? r.value : null, source: r.source }]),
+      rows.map((r) => [
+        r.key,
+        { state: r.state as FactStateName, value: typeof r.value === 'number' ? r.value : null, source: r.source, ...(r.quote ? { quote: r.quote } : {}) },
+      ]),
     );
   }
 
@@ -75,7 +78,7 @@ export class CaseStore {
           value: f.value ?? Prisma.DbNull,
           source: f.source ?? 'unknown',
           sourceMessageId: p.sourceMessageId,
-          quote: p.quote?.slice(0, 500),
+          quote: (p.quote ?? f.quote)?.slice(0, 500),
           assertion: p.assertion,
           confirmed: f.source === 'answer' || f.source === 'profile',
           inputVersion,

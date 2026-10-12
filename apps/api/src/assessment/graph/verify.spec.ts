@@ -1,9 +1,8 @@
 import { type Draft, verifyDraft } from './verify.js';
 
-const ctx = { candidateCodes: new Set(['viral_pharyngitis']), citationIds: new Set(['E1']), urgency: 'soon' as const };
-const draft = (summary: string, rationale = 'Your runny nose fits a viral cause (E1).', extra: Partial<Draft> = {}): Draft => ({
+const ctx = { citationIds: new Set(['E1']), urgency: 'soon' as const };
+const draft = (summary: string, extra: Partial<Draft> = {}): Draft => ({
   summary,
-  explanations: [{ code: 'viral_pharyngitis', likelihood: 'possible', rationale, citations: ['E1'] }],
   questionsForClinician: [],
   memoryRefs: [],
   ...extra,
@@ -13,12 +12,12 @@ describe('memory grounding', () => {
   const grounded = {
     ...ctx,
     memoryIds: new Set(['M1', 'M2']),
-    groundText: 'Penicillin\nLevothyroxine\nMost sore throats are caused by viruses.',
+    groundText: 'Penicillin\nLevothyroxine\nMost sore throats get better on their own.',
     watchTerms: ['amoxicillin', 'penicillin', 'levothyroxine', 'metformin', 'diabetes'],
   };
 
   it('accepts history that cites a memory item', () => {
-    const d = draft('You have a sore throat. Because you are allergic to penicillin, tell the doctor before any medicine is prescribed.', undefined, { memoryRefs: ['M1'] });
+    const d = draft('You have a sore throat. Because you are allergic to penicillin, tell the doctor before any medicine is prescribed.', { memoryRefs: ['M1'] });
     expect(verifyDraft(d, grounded)).toEqual([]);
   });
 
@@ -28,11 +27,11 @@ describe('memory grounding', () => {
   });
 
   it('rejects memory IDs that were never provided', () => {
-    expect(verifyDraft(draft('You have a sore throat; see a doctor within 24–48 hours.', undefined, { memoryRefs: ['M7'] }), grounded).join(' ')).toMatch(/M7 does not exist/);
+    expect(verifyDraft(draft('You have a sore throat; see a doctor within 24–48 hours.', { memoryRefs: ['M7'] }), grounded).join(' ')).toMatch(/M7 does not exist/);
   });
 
   it('rejects medicines or conditions that are not in records or evidence', () => {
-    const d = draft('You have a sore throat; see a doctor within 24–48 hours.', 'With diabetes, a viral cause still fits your runny nose (E1).', { questionsForClinician: ['Should I avoid metformin?'], memoryRefs: ['M1'] });
+    const d = draft('You have a sore throat and diabetes; see a doctor within 24–48 hours.', { questionsForClinician: ['Should I avoid metformin?'], memoryRefs: ['M1'] });
     const issues = verifyDraft(d, grounded).join(' ');
     expect(issues).toMatch(/"diabetes"/);
     expect(issues).toMatch(/"metformin"/);
@@ -42,7 +41,11 @@ describe('memory grounding', () => {
 
 describe('draft verification', () => {
   it('accepts a cited, second-person draft', () => {
-    expect(verifyDraft(draft('You have had a sore throat for three days. Please see a doctor within 24–48 hours.'), ctx)).toEqual([]);
+    expect(verifyDraft(draft('You have had a sore throat for three days [E1]. Please see a doctor within 24–48 hours.'), ctx)).toEqual([]);
+  });
+
+  it('rejects citations that were never retrieved', () => {
+    expect(verifyDraft(draft('You have a sore throat [E4]. See a doctor within 24–48 hours.'), ctx).join(' ')).toMatch(/E4 was not retrieved/);
   });
 
   it('rejects drafts that talk about the patient instead of to them', () => {
@@ -54,20 +57,29 @@ describe('draft verification', () => {
     for (const summary of cases) expect(verifyDraft(draft(summary), ctx).join(' ')).toMatch(/Address the patient directly/);
   });
 
-  it('checks rationales as well as the summary', () => {
-    const issues = verifyDraft(draft('You should see a doctor within 24–48 hours.', 'His symptoms fit a viral cause (E1).'), ctx);
-    expect(issues.join(' ')).toMatch(/Address the patient directly/);
-  });
-
   it('allows disclaimers but still rejects diagnoses', () => {
     const disclaimers = [
-      'You should see a doctor within 24–48 hours. The possible explanations below are not a diagnosis.',
+      'You should see a doctor within 24–48 hours. The general information below is not a diagnosis.',
       'Nora cannot diagnose you; a doctor within 24–48 hours can check this.',
     ];
     for (const summary of disclaimers) expect(verifyDraft(draft(summary), ctx)).toEqual([]);
 
     expect(verifyDraft(draft('You have been diagnosed with strep throat. See a doctor within 24–48 hours.'), ctx).join(' ')).toMatch(/Diagnostic language/);
     expect(verifyDraft(draft('This is not a diagnosis, but you have tonsillitis.'), ctx).join(' ')).toMatch(/Diagnostic language/);
+  });
+
+  it('rejects guessing at or ranking causes, in the summary and in questions for the clinician', () => {
+    const guesses = [
+      'Your sore throat could be strep. See a doctor within 24–48 hours.',
+      'A viral infection is more likely than a bacterial one. See a doctor within 24–48 hours.',
+      'Your symptoms are most likely a migraine. See a doctor within 24–48 hours.',
+      'This sounds like a urinary infection. See a doctor within 24–48 hours.',
+      'Your fever may be due to dengue. See a doctor within 24–48 hours.',
+    ];
+    for (const summary of guesses) expect(verifyDraft(draft(summary), ctx).join(' ')).toMatch(/Guessing at or ranking possible causes|Diagnostic language/);
+    const asking = draft('You should see a doctor within 24–48 hours.', { questionsForClinician: ['Could this be tonsillitis?'] });
+    expect(verifyDraft(asking, ctx).join(' ')).toMatch(/Guessing at or ranking possible causes/);
+    expect(verifyDraft(draft('You should see a doctor within 24–48 hours.', { questionsForClinician: ['How long should I expect the pain to last?'] }), ctx)).toEqual([]);
   });
 
   it('lets the patient ask a clinician about their medicines but not Nora give instructions', () => {

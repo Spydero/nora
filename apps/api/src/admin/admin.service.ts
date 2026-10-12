@@ -15,7 +15,7 @@ export const auditQuerySchema = z.object({ limit: z.coerce.number().int().min(1)
 const PLATFORM_FLAGS = ['assessment', 'ai_generation', 'provider_handoff'] as const;
 const PLATFORM_FLAG_LABEL: Record<string, string> = {
   assessment: 'Symptom assessment',
-  ai_generation: 'AI-generated explanations',
+  ai_generation: 'AI-written summaries',
   provider_handoff: 'External booking handoff',
 };
 

@@ -80,13 +80,7 @@ export class ChecksService {
       }
     }
 
-    const tenantCtx = await this.store.tenantContext(principal.tenantId);
-    if (!tenantCtx.assessmentEnabled) {
-      throw new AppException(HttpStatus.SERVICE_UNAVAILABLE, 'ASSESSMENT_UNAVAILABLE', 'Symptom checks are not available right now. If you feel unwell, contact a doctor.');
-    }
-    if (!(await this.consent.hasGranted(principal.tenantId, principal.userId, 'PROCESSING'))) {
-      throw new AppException(HttpStatus.CONFLICT, 'CONSENT_REQUIRED', 'Please review and accept how Nora uses your health information before starting a check.');
-    }
+    await this.assertCanProcess(principal);
     const tenant = await this.prisma.tenant.findUniqueOrThrow({ where: { id: principal.tenantId } });
     if (!tenant.activeBundleId) {
       throw new AppException(HttpStatus.SERVICE_UNAVAILABLE, 'NO_ACTIVE_BUNDLE', 'Symptom checks are not set up for your organisation yet.');
@@ -133,6 +127,7 @@ export class ChecksService {
     const duplicate = await this.prisma.message.findUnique({ where: { sessionId_idempotencyKey: { sessionId: id, idempotencyKey } } });
     if (duplicate) return this.view(principal, id);
     this.assertCollecting(session.status);
+    await this.assertCanProcess(principal);
 
     await this.prisma.$transaction(async (tx) => {
       const inputVersion = await this.bumpInput(tx, session.id, session.inputVersion, {
@@ -150,6 +145,7 @@ export class ChecksService {
   async answer(principal: AuthPrincipal, id: string, questionId: string, inputVersion: number, value: AnswerValue): Promise<CheckView> {
     const session = await this.owned(principal, id);
     this.assertCollecting(session.status);
+    await this.assertCanProcess(principal);
     if (session.inputVersion !== inputVersion || session.pendingQuestionId !== questionId) {
       throw new AppException(HttpStatus.CONFLICT, 'STALE_INPUT', 'This question has changed. Please review the latest question.', true);
     }
@@ -374,6 +370,17 @@ export class ChecksService {
       urgencyTitle: content?.urgency.title ?? null,
       summary: content?.summary ?? null,
     };
+  }
+
+  /** New health information is only processed while assessments are switched on and the patient's processing consent stands. */
+  private async assertCanProcess(principal: AuthPrincipal) {
+    const tenantCtx = await this.store.tenantContext(principal.tenantId);
+    if (!tenantCtx.assessmentEnabled) {
+      throw new AppException(HttpStatus.SERVICE_UNAVAILABLE, 'ASSESSMENT_UNAVAILABLE', 'Symptom checks are not available right now. If you feel unwell, contact a doctor.');
+    }
+    if (!(await this.consent.hasGranted(principal.tenantId, principal.userId, 'PROCESSING'))) {
+      throw new AppException(HttpStatus.CONFLICT, 'CONSENT_REQUIRED', 'Please review and accept how Nora uses your health information before using a check.');
+    }
   }
 
   private async owned(principal: AuthPrincipal, id: string) {

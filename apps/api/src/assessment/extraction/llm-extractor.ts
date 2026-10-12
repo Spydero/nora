@@ -2,10 +2,10 @@ import type { BaseChatModel } from '@langchain/core/language_models/chat_models'
 import { HumanMessage, SystemMessage } from '@langchain/core/messages';
 import { z } from 'zod';
 import type { BundleContent } from '../../clinical/bundle.schema.js';
-import { type FactMap, UNCLEAR_SOURCE } from '../../clinical/rules-engine.js';
+import { detectConcerns, type FactMap, UNCLEAR_SOURCE } from '../../clinical/rules-engine.js';
 import { EXTRACTION_SYSTEM } from '../graph/prompts.js';
 import type { AnswerConflict } from '../result.types.js';
-import type { Observation } from './rule-extractor.js';
+import { type Observation, saidAround, segmentOf, timeRole } from './rule-extractor.js';
 
 export interface TokenUsage {
   inputTokens: number;
@@ -51,6 +51,27 @@ function numberGrounded(value: number, quote: string, unit: string | undefined):
   return written.some((n) => Math.abs(n - value) < 0.05 || (unit === '°C' && Math.abs(((n - 32) * 5) / 9 - value) < 0.2));
 }
 
+/** Number facts that are a timeline, and the kind of text their time must come from. */
+const TIMELINE_ROLE: Record<string, 'onset' | 'exposure'> = { duration_days: 'onset', exposure_days: 'exposure' };
+
+/**
+ * A model may read "bitten 3 days ago" as how long symptoms have lasted. A
+ * duration counts only when the words it came from are about the symptoms,
+ * and an exposure time only when they are about the exposure.
+ */
+function timelineGrounded(bundle: BundleContent, message: string, factKey: string, quote: string): boolean {
+  const expected = TIMELINE_ROLE[factKey];
+  if (!expected) return true;
+  const seg = segmentOf(message, quote);
+  const role = timeRole(bundle, seg ?? quote);
+  return expected === 'onset' ? role !== 'exposure' && role !== 'history' : role === 'exposure';
+}
+
+function locate(message: string, quote: string): string | undefined {
+  const at = message.toLowerCase().indexOf(quote.toLowerCase().trim());
+  return at < 0 ? undefined : saidAround(message, at);
+}
+
 /**
  * Drops anything the model could not ground in the patient's own words. A
  * warning sign can only be ruled out by a quote that names it, so the model
@@ -66,13 +87,16 @@ export function validateObservations(bundle: BundleContent, message: string, raw
     if (assertion !== 'affirmed' && assertion !== 'negated') continue;
     const state = assertion === 'negated' ? 'ABSENT' : 'PRESENT';
     if (state === 'ABSENT' && def.critical && ![def.label, ...def.synonyms].some((t) => normalise(o.quote).includes(normalise(t)))) continue;
+    const said = locate(message, o.quote);
+    const context = said ? { said } : {};
     if (def.type === 'number') {
       if (state !== 'PRESENT' || o.value === null || !Number.isFinite(o.value)) continue;
       const { min, max } = numberRange(bundle, o.factKey);
       if (o.value < min || o.value > max || !numberGrounded(o.value, o.quote, def.unit)) continue;
-      out.push({ factKey: o.factKey, state, value: o.value, quote: o.quote, assertion, source: 'llm' });
+      if (!timelineGrounded(bundle, message, o.factKey, o.quote)) continue;
+      out.push({ factKey: o.factKey, state, value: o.value, quote: o.quote, ...context, assertion, source: 'llm' });
     } else {
-      out.push({ factKey: o.factKey, state, quote: o.quote, assertion, source: 'llm' });
+      out.push({ factKey: o.factKey, state, quote: o.quote, ...context, assertion, source: 'llm' });
     }
   }
   return out;
@@ -95,7 +119,7 @@ export async function extractWithModel(
   const catalogue = Object.entries(bundle.facts)
     .map(
       ([k, f]) =>
-        `- ${k}: ${f.label}${f.unit ? ` (${f.unit})` : ''}${f.kind === 'history' ? ' [history]' : ''}${f.absentSynonyms.length ? ` (negated when the patient says: ${f.absentSynonyms.join(', ')})` : ''}`,
+        `- ${k}: ${f.label}${f.unit ? ` (${f.unit})` : ''}${f.kind === 'history' || f.kind === 'exposure' ? ` [${f.kind}]` : ''}${f.absentSynonyms.length ? ` (negated when the patient says: ${f.absentSynonyms.join(', ')})` : ''}`,
     )
     .join('\n');
   const runnable = model.withStructuredOutput(schema, { name: 'record_observations', includeRaw: true, method: 'functionCalling' });
@@ -129,15 +153,27 @@ export function mergeObservations(bundle: BundleContent, rules: Observation[], l
 const CONFIRMED_SOURCES = new Set(['answer', 'profile', 'correction']);
 
 /**
- * A yes/no the patient gave is never changed by reading a later message.
- * Disagreements are reported instead; the exceptions are a warning sign
- * they answered "no" to and later describe, and a condition or medicine their
- * profile doesn't list but their message mentions. Both are treated as present
- * to be safe and reported too.
+ * A yes/no the patient gave is never silently changed by reading a later
+ * message; every disagreement is reported and resolved as follows:
+ * - a warning sign, or a condition or medicine missing from their profile,
+ *   that the message describes is treated as present to be safe;
+ * - a warning sign they said yes to stays present, since only an explicit
+ *   answer can clear it;
+ * - anything else is asked again so the patient settles it, unless no
+ *   question asks about it or it is what this check is about, in which case
+ *   their answer is kept.
  */
-export function guardConfirmed(bundle: BundleContent, facts: FactMap, observations: Observation[]): { observations: Observation[]; conflicts: AnswerConflict[] } {
+export function guardConfirmed(
+  bundle: BundleContent,
+  facts: FactMap,
+  observations: Observation[],
+): { observations: Observation[]; conflicts: AnswerConflict[]; reopen: FactMap } {
   const kept: Observation[] = [];
   const conflicts: AnswerConflict[] = [];
+  const reopen: FactMap = {};
+  const triggers = new Set(detectConcerns(bundle, facts).flatMap((c) => c.triggers));
+  const askable = (key: string) =>
+    Object.values(bundle.questions).some((q) => q.purpose !== 'safety' && q.type === 'yes_no' && q.factKey === key);
   for (const o of observations) {
     const current = facts[o.factKey];
     const def = bundle.facts[o.factKey];
@@ -148,17 +184,19 @@ export function guardConfirmed(bundle: BundleContent, facts: FactMap, observatio
     }
     const fromProfile = current.source === 'profile';
     const safety = (def.critical || fromProfile) && o.state === 'PRESENT';
+    const askAgain = !safety && !(def.critical && current.state === 'PRESENT') && askable(o.factKey) && !triggers.has(o.factKey);
     conflicts.push({
       key: o.factKey,
       label: def.label,
       answered: current.state === 'PRESENT' ? 'yes' : 'no',
       mentioned: o.state === 'PRESENT' ? 'yes' : 'no',
-      resolution: safety ? 'treated_as_present' : 'kept_answer',
+      resolution: safety ? 'treated_as_present' : askAgain ? 'ask_again' : 'kept_answer',
       ...(fromProfile ? { answeredIn: 'profile' as const } : {}),
     });
     if (safety) kept.push(o);
+    else if (askAgain) reopen[o.factKey] = { state: 'NOT_ASKED', source: UNCLEAR_SOURCE };
   }
-  return { observations: kept, conflicts };
+  return { observations: kept, conflicts, reopen };
 }
 
 /**
@@ -185,7 +223,8 @@ export function applyObservations(bundle: BundleContent, facts: FactMap, observa
     const current = facts[o.factKey];
     if (current?.state === 'PRESENT' && o.state === 'ABSENT' && bundle.facts[o.factKey]?.critical) continue;
     if (current?.state === o.state && (current.value ?? null) === (o.value ?? null)) continue;
-    changes[o.factKey] = { state: o.state, value: o.value ?? null, source: o.source };
+    const quote = o.said ?? o.quote;
+    changes[o.factKey] = { state: o.state, value: o.value ?? null, source: o.source, ...(quote ? { quote } : {}) };
   }
   return changes;
 }

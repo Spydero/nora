@@ -113,15 +113,16 @@ describe('contradictory recommendations', () => {
     const result = {
       urgency: { level: 'self_care' as const, title: '', text: '', reasons: [] },
       summary: 'You have a runny nose.',
-      explanations: [{ code: 'x', label: 'x', plain: 'This needs same-day care.', clinical: '', likelihood: 'possible' as const, rationale: '', citations: [] }],
+      information: [{ code: 'x', title: 'x', text: 'This needs same-day care.', citations: [] }],
       carePlan: [{ id: 'w', kind: 'monitoring', text: 'Call 112 if you can’t breathe.', citations: [], watch: true }],
     };
     expect(recommendationConflicts(result).join(' ')).toMatch(/more urgent care/);
-    expect(recommendationConflicts({ ...result, explanations: [] })).toEqual([]);
+    expect(recommendationConflicts({ ...result, information: [] })).toEqual([]);
   });
 
-  it('approved explanation text never sets its own timeframe', () => {
-    const texts = demoBundle.concerns.flatMap((c) => c.explanations.flatMap((e) => [e.plain, e.clinical]));
+  it('approved general information never sets its own timeframe', () => {
+    const texts = demoBundle.concerns.flatMap((c) => c.information.map((i) => i.text));
+    expect(texts.length).toBeGreaterThan(0);
     expect(aboveLevelIssues(texts, 'self_care')).toEqual([]);
   });
 });

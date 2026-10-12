@@ -88,7 +88,7 @@ export default function ReviewCasePage({ params }: PageProps<"/review/[id]">) {
         </div>
 
         <Panel title="What Nora told the patient" titleId="result-h">
-          <ResultView result={data.result} review={null} defaultTerms="clinical" />
+          <ResultView result={data.result} review={null} />
         </Panel>
 
         <div className="flex flex-col gap-4">

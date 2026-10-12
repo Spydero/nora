@@ -119,7 +119,7 @@ async function seedBundle(tenantId: string, authorId: string, approverId: string
         version: DEMO_BUNDLE_VERSION,
         status: 'RELEASED',
         content: demoBundle as object,
-        changeNote: 'Concern-specific warning signs; adds fever, cold/flu, diarrhoea and vomiting, skin rash, ear pain and dizziness',
+        changeNote: 'Non-diagnostic: general information replaces ranked explanations; animal and snake bite pathway; exposure timelines; claim-level citations; no steam inhalation',
         authorId,
         approverId,
         approvedAt: new Date(),

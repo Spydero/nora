@@ -25,11 +25,13 @@ import { triage } from '../../clinical/triage.js';
 import {
   buildResult,
   caseSummary,
+  citedSourceKeys,
   concernDefs,
   daysSince,
   type EmergencyContacts,
   episodeContext,
   escalationResult,
+  information,
   recordQuestions,
   recurrence,
   relevantMemory,
@@ -45,6 +47,8 @@ import { type Draft, verifyDraft } from './verify.js';
 export const MAX_DRAFT_ATTEMPTS = 2;
 /** Decision-model probability above which a non-emergency case is flagged for clinician review. */
 export const DECISION_REVIEW_THRESHOLD = 0.7;
+/** Enough to load every passage of a source, so each claim can cite the passage that supports it. */
+const PASSAGES_PER_SOURCE = 20;
 
 export type Outcome = 'NEEDS_INPUT' | 'COMPLETED' | 'INCOMPLETE' | 'ESCALATED' | 'UNSUPPORTED';
 
@@ -92,7 +96,6 @@ const State = Annotation.Root({
   messages: Annotation<BaseMessage[]>({ reducer: messagesStateReducer, default: () => [] }),
   researchRounds: Annotation<number>({ reducer: (_a, b) => b, default: () => 0 }),
   evidence: Annotation<EvidenceRef[]>({ reducer: (_a, b) => b, default: () => [] }),
-  ranking: Annotation<Record<string, number> | null>({ reducer: (_a, b) => b, default: () => null }),
   reviewReasons: Annotation<string[]>({ reducer: (a, b) => [...new Set([...a, ...b])], default: () => [] }),
   draft: Annotation<Draft | null>({ reducer: (_a, b) => b, default: () => null }),
   draftAttempts: Annotation<number>({ reducer: (_a, b) => b, default: () => 0 }),
@@ -133,29 +136,21 @@ const priorCheck = (s: AssessmentState, concerns: string[]) =>
     s.context.now ?? new Date(),
   );
 
-function draftSchema(codes: [string, ...string[]]) {
-  return z.object({
-    summary: z.string().min(20).max(1200).describe('2–3 sentence plain-language summary of what you reported and what it may mean; the next step is shown separately'),
-    explanations: z
-      .array(
-        z.object({
-          code: z.enum(codes),
-          likelihood: z.enum(['more_likely', 'possible', 'less_likely']),
-          rationale: z.string().max(600).describe('Why this candidate fits or does not fit the facts'),
-          citations: z.array(z.string()).min(1).max(4).describe('Evidence IDs such as "E1"'),
-        }),
-      )
-      .min(1)
-      .max(codes.length),
-    questionsForClinician: z.array(z.string().max(200)).max(4),
-    memoryRefs: z.array(z.string()).max(8).describe('IDs of memory items (like "M2") the text relies on; empty if none'),
-  });
-}
+const draftSchema = z.object({
+  summary: z
+    .string()
+    .min(20)
+    .max(1200)
+    .describe('2–3 plain-language sentences restating what you reported (symptoms, timings, exposures) and what the required next step means; no causes or conditions'),
+  questionsForClinician: z.array(z.string().max(200)).max(4),
+  memoryRefs: z.array(z.string()).max(8).describe('IDs of memory items (like "M2") the text relies on; empty if none'),
+});
 
 /**
- * Builds the per-run assessment graph. Deterministic nodes own urgency, scope
- * and question selection; model-backed nodes only research, rank approved
- * candidates and write explanations, and every draft is verified.
+ * Builds the per-run assessment graph. Deterministic nodes own urgency, scope,
+ * question selection and the general information shown; model-backed nodes
+ * only read the patient's words, research and write a summary, and every
+ * draft is verified.
  */
 export function buildAssessmentGraph(deps: AssessmentDeps) {
   const registry = new EvidenceRegistry();
@@ -187,7 +182,7 @@ export function buildAssessmentGraph(deps: AssessmentDeps) {
       const unclear = applyHedged(s.facts, hedged, guarded.observations);
       return {
         observations: guarded.observations,
-        facts: { ...unclear, ...applyObservations(s.bundle, s.facts, guarded.observations) },
+        facts: { ...unclear, ...guarded.reopen, ...applyObservations(s.bundle, s.facts, guarded.observations) },
         conflicts: guarded.conflicts,
         hedged: Object.keys(unclear),
       };
@@ -241,7 +236,7 @@ export function buildAssessmentGraph(deps: AssessmentDeps) {
       ...urgency.triggered.map((t) => t.sourceKey),
       ...s.bundle.urgencyActions.emergency.careItems.map((id) => s.bundle.careItems[id]!.sourceKey),
     ];
-    for (const chunk of await deps.knowledge.bySourceKeys([...new Set(keys)], 1)) registry.add(chunk);
+    for (const chunk of await deps.knowledge.bySourceKeys([...new Set(keys)], PASSAGES_PER_SOURCE)) registry.add(chunk);
     const result = escalationResult(s.bundle, s.facts, concerns, urgency, registry, s.context.emergency, recordsOf(s), conflictsOf(s), {
       episode: episodeContext(s.facts, priorCheck(s, s.concerns)),
     });
@@ -249,7 +244,8 @@ export function buildAssessmentGraph(deps: AssessmentDeps) {
   };
 
   const unsupported = async (s: AssessmentState): Promise<Update> => {
-    for (const chunk of await deps.knowledge.bySourceKeys(['src_self_care_general', ...(s.urgency?.triggered ?? []).map((t) => t.sourceKey)], 1)) registry.add(chunk);
+    const keys = ['src_self_care_general', ...(s.urgency?.triggered ?? []).map((t) => t.sourceKey)];
+    for (const chunk of await deps.knowledge.bySourceKeys([...new Set(keys)], PASSAGES_PER_SOURCE)) registry.add(chunk);
     const message = s.scope?.message ?? 'Nora cannot assess this concern yet. Please speak with a doctor.';
     const result = unsupportedResult(s.bundle, s.facts, s.urgency!, message, registry, s.context.emergency, recordsOf(s), conflictsOf(s));
     return { outcome: 'UNSUPPORTED', result, evidence: result.evidence, generator: 'rules' };
@@ -297,51 +293,39 @@ export function buildAssessmentGraph(deps: AssessmentDeps) {
   };
 
   const ensureEvidence = async (s: AssessmentState): Promise<Update> => {
-    const concerns = concernDefs(s.bundle, s.concerns);
-    const keys = new Set<string>([
-      ...concerns.flatMap((c) => c.sourceKeys),
-      ...concerns.flatMap((c) => c.explanations.flatMap((e) => e.sourceKeys)),
-      ...concerns.flatMap((c) => c.careItems.map((id) => s.bundle.careItems[id]!.sourceKey)),
-      ...(s.urgency?.triggered ?? []).map((t) => t.sourceKey),
-      ...s.bundle.urgencyActions[s.urgency!.level].careItems.map((id) => s.bundle.careItems[id]!.sourceKey),
-    ]);
-    for (const chunk of await deps.knowledge.bySourceKeys([...keys], 2)) registry.add(chunk);
+    const keys = citedSourceKeys(s.bundle, concernDefs(s.bundle, s.concerns), s.urgency!, s.facts);
+    for (const chunk of await deps.knowledge.bySourceKeys(keys, PASSAGES_PER_SOURCE)) registry.add(chunk);
     return { evidence: registry.list() };
   };
 
+  /**
+   * A second opinion that can only ask for a clinician to look: a model that
+   * thinks the case may be an emergency flags it for review. It never changes
+   * the urgency the rules set, and Nora doesn't ask it for a likely cause.
+   */
   const decide = async (s: AssessmentState): Promise<Update> => {
     if (!deps.decisions) return {};
-    await stage('ranking_explanations');
-    const concerns = concernDefs(s.bundle, s.concerns);
-    const candidates = concerns.flatMap((c) => c.explanations);
+    await stage('cross_checking');
     const summary = caseSummary(s.bundle, s.facts, s.concerns, null, recordsOf(s));
-    const criteria = Object.fromEntries(
-      candidates.map((e) => [
-        e.code,
-        `${e.clinical}. Supported by: ${e.supportingFacts.map((f) => s.bundle.facts[f]?.label).join(', ') || 'nonspecific features'}. Less likely with: ${e.againstFacts.map((f) => s.bundle.facts[f]?.label).join(', ') || 'none'}.`,
-      ]),
-    );
     try {
       const res = await deps.decisions.decide(
         {
           age: summary.age,
           concerns: summary.concerns.map((c) => c.label),
           ...summary.thisConsultation,
+          exposures: summary.exposures,
           healthBackground: summary.healthBackground.present,
         },
         {
-          ...(candidates.length > 1 ? { best_explanation: { type: 'choice' as const, instructions: 'Which approved candidate explanation best fits the findings?', criteria } } : {}),
           needs_emergency_care: { type: 'noul' as const, instructions: 'Do these findings suggest a medical emergency that needs immediate in-person care?' },
         },
       );
-      const best = res.answers.best_explanation;
-      const ranking = best?.type === 'choice' ? best.probabilities : candidates.length === 1 ? { [candidates[0]!.code]: 1 } : null;
       const emergency = res.answers.needs_emergency_care;
       const reviewReasons =
         emergency?.type === 'noul' && emergency.noul >= DECISION_REVIEW_THRESHOLD && s.urgency!.level !== 'emergency'
           ? ['decision_model_flagged_possible_emergency']
           : [];
-      return { ranking, reviewReasons, usage: res.usage };
+      return { reviewReasons, usage: res.usage };
     } catch (e) {
       return { aiErrors: [`decisions: ${errorText(e)}`] };
     }
@@ -350,7 +334,7 @@ export function buildAssessmentGraph(deps: AssessmentDeps) {
   const draft = async (s: AssessmentState): Promise<Update> => {
     const concerns = concernDefs(s.bundle, s.concerns);
     const fallback = (generator: Generator, errors: string[] = []): Update => ({
-      draft: templateDraft(s.bundle, s.facts, concerns, registry, s.ranking ?? undefined, recordsOf(s)),
+      draft: templateDraft(s.bundle, s.facts, recordsOf(s)),
       generator,
       issues: [],
       aiErrors: errors,
@@ -359,19 +343,16 @@ export function buildAssessmentGraph(deps: AssessmentDeps) {
     if (s.aiErrors.some((e) => e.startsWith('research:'))) return fallback('template_fallback');
 
     await stage('drafting', { attempt: s.draftAttempts + 1 });
-    const candidates = concerns.flatMap((c) => c.explanations);
-    const codes = candidates.map((c) => c.code) as [string, ...string[]];
     const payload = {
       writeTo: 'The person who sent this, as "you". Start the summary with "You".',
       case: caseSummary(s.bundle, s.facts, s.concerns, s.urgency, recordsOf(s)),
       requiredNextStep: s.bundle.urgencyActions[s.urgency!.level].title,
-      candidates: candidates.map((c) => ({ code: c.code, label: c.label, description: c.plain })),
-      calibratedRanking: s.ranking,
+      shownSeparately: information(concerns, s.facts).map((i) => i.title),
       evidence: registry.list().map((r) => ({ id: r.citationId, source: r.title, heading: r.heading, text: r.excerpt })),
       ...(s.issues.length ? { previousAttemptRejectedFor: s.issues } : {}),
     };
     try {
-      const runnable = deps.models.chat.withStructuredOutput(draftSchema(codes), { name: 'submit_assessment_draft', includeRaw: true, method: 'functionCalling' });
+      const runnable = deps.models.chat.withStructuredOutput(draftSchema, { name: 'submit_assessment_draft', includeRaw: true, method: 'functionCalling' });
       const { parsed, raw } = (await runnable.invoke([new SystemMessage(DRAFT_SYSTEM), new HumanMessage(JSON.stringify(payload))])) as { parsed: Draft; raw: unknown };
       return { draft: parsed, draftAttempts: s.draftAttempts + 1, generator: 'llm', usage: usageOf(raw) };
     } catch (e) {
@@ -388,15 +369,13 @@ export function buildAssessmentGraph(deps: AssessmentDeps) {
   const verify = async (s: AssessmentState): Promise<Update> => {
     await stage('verifying');
     if (!s.draft) return {};
-    const explanations = concernDefs(s.bundle, s.concerns).flatMap((c) => c.explanations);
     const records = recordsOf(s);
     const groundText = [
       ...records.map((m) => m.text),
       ...registry.list().map((r) => r.excerpt),
-      ...explanations.flatMap((e) => [e.label, e.plain, e.clinical]),
+      ...information(concernDefs(s.bundle, s.concerns), s.facts).map((i) => i.text),
     ].join('\n');
     const issues = verifyDraft(s.draft, {
-      candidateCodes: new Set(explanations.map((e) => e.code)),
       citationIds: new Set(registry.list().map((r) => r.citationId)),
       urgency: s.urgency!.level,
       memoryIds: new Set(records.map((m) => m.id)),
@@ -404,22 +383,11 @@ export function buildAssessmentGraph(deps: AssessmentDeps) {
       watchTerms: deps.watchTerms,
       answers: answerFacts(s.bundle, s.facts),
     });
-    let draftOut = s.draft;
-    if (!issues.length && s.ranking) {
-      const t = templateDraft(s.bundle, s.facts, concernDefs(s.bundle, s.concerns), registry, s.ranking);
-      const calibrated = new Map(t.explanations.map((e) => [e.code, e.likelihood]));
-      draftOut = {
-        ...s.draft,
-        explanations: [...s.draft.explanations]
-          .map((e) => ({ ...e, likelihood: calibrated.get(e.code) ?? e.likelihood }))
-          .sort((a, b) => (s.ranking![b.code] ?? 0) - (s.ranking![a.code] ?? 0)),
-      };
-    }
-    return { issues, draft: draftOut };
+    return { issues };
   };
 
   const fallback = async (s: AssessmentState): Promise<Update> => ({
-    draft: templateDraft(s.bundle, s.facts, concernDefs(s.bundle, s.concerns), registry, s.ranking ?? undefined, recordsOf(s)),
+    draft: templateDraft(s.bundle, s.facts, recordsOf(s)),
     generator: 'template_fallback',
     reviewReasons: verificationFailed(s) ? ['ai_draft_failed_verification'] : [],
   });
@@ -441,15 +409,15 @@ export function buildAssessmentGraph(deps: AssessmentDeps) {
     if (s.generator === 'template') {
       limitations.push(
         deps.aiPaused
-          ? 'AI explanations are temporarily unavailable, so this result uses Nora’s standard approved guidance. Your urgency advice comes from Nora’s safety rules and is unaffected.'
-          : 'AI explanations are switched off; this result uses Nora’s standard approved guidance.',
+          ? 'The AI-written summary is temporarily unavailable, so this result uses Nora’s standard approved wording. Your urgency advice comes from Nora’s safety rules and is unaffected.'
+          : 'AI-written summaries are switched off; this result uses Nora’s standard approved wording.',
       );
     }
     if (s.generator === 'template_fallback') {
       limitations.push(
         unverified
-          ? 'The AI explanation didn’t pass Nora’s checks, so it isn’t shown. The explanations below are Nora’s approved guidance, and a clinician will review this result. Your urgency advice comes from Nora’s clinical rules and is unaffected.'
-          : 'The AI service didn’t respond properly, so Nora is showing its standard approved guidance instead. Your urgency advice comes from Nora’s clinical rules and is unaffected.',
+          ? 'The AI-written summary didn’t pass Nora’s checks, so it isn’t shown. The summary below is Nora’s standard wording, and a clinician will review this result. Your urgency advice comes from Nora’s clinical rules and is unaffected.'
+          : 'The AI service didn’t respond properly, so Nora is showing its standard approved wording instead. Your urgency advice comes from Nora’s clinical rules and is unaffected.',
       );
     }
     const memory = recordsOf(s);

@@ -97,7 +97,7 @@ export default function BrandPage() {
                 {name} {step.size}/{step.lineHeight}
               </span>
               <span style={{ fontSize: step.size, lineHeight: `${step.lineHeight}px` }} className="font-semibold">
-                Possible explanation based on the information provided
+                How soon to get care, based on what you told Nora
               </span>
             </div>
           ))}
@@ -132,7 +132,7 @@ export default function BrandPage() {
               Based on the information provided, your symptoms need immediate care.
             </Alert>
             <Alert status="warning" title="See a doctor within 24 hours">
-              Possible explanation: a bacterial throat infection. A clinician can confirm this.
+              A sore throat with fever and swollen neck glands should be checked by a doctor.
             </Alert>
           </div>
         </div>

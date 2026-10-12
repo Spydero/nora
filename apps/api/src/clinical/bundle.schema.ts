@@ -37,7 +37,7 @@ export const conditionSchema: z.ZodType<Condition> = z.lazy(() =>
   ]),
 );
 
-export const FACT_KINDS = ['symptom', 'history', 'context'] as const;
+export const FACT_KINDS = ['symptom', 'history', 'context', 'exposure'] as const;
 export type FactKind = (typeof FACT_KINDS)[number];
 
 const factSchema = z.object({
@@ -52,6 +52,8 @@ const factSchema = z.object({
    * Symptoms belong to one consultation. History facts describe the patient
    * (long-term conditions, regular medicines) and may be filled from their
    * profile; context is everything else Nora derives (age, recurrence).
+   * Exposures are events such as a bite or unsafe food: they have their own
+   * timeline and are never counted as a symptom or its onset.
    */
   kind: z.enum(FACT_KINDS).default('symptom'),
 });
@@ -86,6 +88,7 @@ const questionSchema = z.object({
   unselected: z.enum(['absent', 'unasked']).default('absent'),
 });
 
+/** Candidate diagnoses from bundles released before Nora stopped ranking causes; parsed so old bundles still load, never shown as a ranking. */
 const explanationSchema = z.object({
   code: z.string(),
   label: z.string(),
@@ -96,9 +99,26 @@ const explanationSchema = z.object({
   sourceKeys: z.array(z.string()).min(1),
 });
 
+/**
+ * Approved general health information for a concern. It describes the topic,
+ * never the patient, and is shown word for word; `sourceHeading` names the
+ * passage of the source that supports it.
+ */
+const informationSchema = z.object({
+  code: z.string(),
+  title: z.string(),
+  text: z.string(),
+  sourceKey: z.string(),
+  sourceHeading: z.string().optional(),
+  /** Shown only when this holds, so information stays relevant to what the patient reported. */
+  showIf: conditionSchema.optional(),
+});
+
 const concernSchema = z.object({
   code: z.string(),
   label: z.string(),
+  /** Exposure concerns (a bite) are assessed alongside whatever symptoms the patient has, never instead of them. */
+  kind: z.enum(['symptom', 'exposure']).default('symptom'),
   triggers: z.array(z.string()).min(1),
   /** General presentations (fever, a cold) that only apply when no more specific concern matches. */
   onlyAlone: z.boolean().default(false),
@@ -106,7 +126,8 @@ const concernSchema = z.object({
   defaultLevel: z.enum(URGENCY_LEVELS),
   questions: z.array(z.string()),
   requiredFacts: z.array(z.string()),
-  explanations: z.array(explanationSchema).min(1),
+  explanations: z.array(explanationSchema).default([]),
+  information: z.array(informationSchema).default([]),
   careItems: z.array(z.string()),
   sourceKeys: z.array(z.string()).min(1),
 });
@@ -119,6 +140,7 @@ const ruleSchema = z.object({
   concerns: z.array(z.string()).optional(),
   careItems: z.array(z.string()).default([]),
   sourceKey: z.string(),
+  sourceHeading: z.string().optional(),
 });
 
 const exclusionSchema = z.object({
@@ -132,6 +154,7 @@ const careItemSchema = z.object({
   text: z.string(),
   timeframe: z.string().optional(),
   sourceKey: z.string(),
+  sourceHeading: z.string().optional(),
   /**
    * For "get help if…" items: the conditions the text describes and the level
    * they call for. If one already holds, the warning has happened, so the
@@ -200,10 +223,16 @@ export const bundleContentSchema = z
     if (content.episodeQuestion && !questions.has(content.episodeQuestion)) issue(`episode question ${content.episodeQuestion} missing`);
     if (content.closingQuestion && content.questions[content.closingQuestion]?.type !== 'text') issue(`closing question ${content.closingQuestion} must be a text question`);
     const explanationCodes = new Set<string>();
+    const infoCodes = new Set<string>();
     for (const concern of content.concerns) {
       for (const e of concern.explanations) {
         if (explanationCodes.has(e.code)) issue(`explanation code ${e.code} is used by more than one concern`);
         explanationCodes.add(e.code);
+      }
+      for (const i of concern.information) {
+        if (infoCodes.has(i.code)) issue(`information code ${i.code} is used more than once`);
+        infoCodes.add(i.code);
+        if (i.showIf) walk(i.showIf, `information ${i.code}`);
       }
       concern.triggers.forEach((f) => !facts.has(f) && issue(`concern ${concern.code} trigger ${f} unknown`));
       concern.questions.forEach((q) => !questions.has(q) && issue(`concern ${concern.code} question ${q} missing`));

@@ -36,7 +36,6 @@ export interface DoctorSummary {
   sections: DoctorSummarySection[];
 }
 
-const LIKELIHOOD: Record<string, string> = { more_likely: 'more likely', possible: 'possible', less_likely: 'less likely' };
 const SEX: Record<string, string> = { MALE: 'male', FEMALE: 'female', INTERSEX: 'intersex' };
 const GAP: Record<string, string> = { unsure: 'patient unsure', skipped: 'patient skipped', not_asked: 'not asked' };
 export const SUMMARY_TIME_ZONE = 'Asia/Kolkata';
@@ -47,6 +46,8 @@ const dateTime = (d: Date) =>
 const isoDate = (d: Date) => d.toLocaleDateString('en-CA', { timeZone: SUMMARY_TIME_ZONE });
 const bullets = (lines: string[], empty: string) => (lines.length ? lines.map((l) => `- ${l}`).join('\n') : empty);
 const finding = (f: FindingItem) => (f.value !== undefined && f.value !== null ? `${f.label}: ${quantity(f.value, f.unit)}` : f.label);
+/** A finding with the patient's own words, so severity and timing reach the doctor as they were said. */
+const reported = (f: FindingItem) => `${finding(f)}${f.said ? ` — patient’s words: “${f.said}”` : ''}${f.source === 'episode' ? ' (worked out from the earlier check)' : ''}`;
 
 function profileList(list: ProfileList | null | undefined, label: string): string {
   switch (list?.state) {
@@ -63,14 +64,14 @@ function profileList(list: ProfileList | null | undefined, label: string): strin
 
 function conflictLine(c: AnswerConflict): string {
   const before = c.answeredIn === 'profile' ? `profile ${c.answered === 'yes' ? 'lists' : 'does not list'} it` : `answered “${c.answered}”`;
-  const outcome = c.resolution === 'treated_as_present' ? 'treated as present for safety' : 'original answer kept';
+  const outcome = c.resolution === 'treated_as_present' ? 'treated as present for safety' : c.resolution === 'ask_again' ? 'asked again; see the answers above' : 'original answer kept';
   return `${c.label}: ${before}, later message ${c.mentioned === 'yes' ? 'mentions it' : 'suggests it is absent'} (${outcome})`;
 }
 
 function explainedBy(r: ResultContent): string {
-  if (r.generator === 'llm') return `Written by AI${r.model ? ` (${r.model})` : ''} from approved guidance and checked by Nora. It cannot change the urgency above.`;
+  if (r.generator === 'llm') return `Summary written by AI${r.model ? ` (${r.model})` : ''} and checked by Nora. It cannot change the urgency above.`;
   if (r.generator === 'rules') return 'Nora’s clinical rules only; no AI was used.';
-  return 'Nora’s standard approved guidance; no AI text is included.';
+  return 'Nora’s standard approved wording; no AI text is included.';
 }
 
 function recommendations(r: ResultContent): string[] {
@@ -123,7 +124,10 @@ export function buildDoctorSummary(input: DoctorSummaryInput): DoctorSummary {
     });
   }
   sections.push(
-    { id: 'symptoms', heading: 'Symptoms reported', text: bullets(r.findings.present.map(finding), 'None reported.') },
+    { id: 'symptoms', heading: 'Symptoms reported', text: bullets(r.findings.present.map(reported), 'None reported.') },
+    ...(r.findings.exposures?.length
+      ? [{ id: 'exposures', heading: 'Exposures reported (not symptoms)', text: bullets(r.findings.exposures.map(reported), '') }]
+      : []),
     { id: 'negatives', heading: 'Symptoms the patient does not have', text: bullets(r.findings.absent.map(finding), 'None recorded.') },
     {
       id: 'uncertain',
@@ -160,17 +164,11 @@ export function buildDoctorSummary(input: DoctorSummaryInput): DoctorSummary {
     },
     {
       id: 'explanation',
-      heading: 'Explanation (cannot change the urgency)',
+      heading: 'Summary for the patient (cannot change the urgency)',
       text: [
-        r.summary,
-        ...(r.explanations.length
-          ? [
-              'Possible explanations (not a diagnosis):',
-              ...r.explanations.map(
-                (e) => `- ${e.label}${e.clinical && e.clinical !== e.label ? ` (${e.clinical})` : ''}: ${LIKELIHOOD[e.likelihood] ?? e.likelihood}. ${e.rationale.replace(/\s*\[?E\d+\]?/g, '')}`,
-              ),
-            ]
-          : []),
+        r.summary.replace(/\s*\[?E\d+\]?/g, ''),
+        ...(r.information?.length ? ['General information shown (not about this patient, not a diagnosis):', ...r.information.map((i) => `- ${i.title}`)] : []),
+        ...(r.explanations?.length ? ['This check was made by an earlier version of Nora that suggested possible causes. They are left out here because Nora does not diagnose.'] : []),
         explainedBy(r),
       ].join('\n'),
     },
@@ -194,7 +192,7 @@ export function buildDoctorSummary(input: DoctorSummaryInput): DoctorSummary {
     {
       id: 'disclaimer',
       heading: 'About this summary',
-      text: `Prepared on ${date(input.now)} by Nora, an AI symptom checker, from what the patient reported. Urgency comes from Nora’s clinical rules; AI only helps explain it. It is not a diagnosis and has not been checked by a doctor unless a clinician review is shown above. The patient may have edited it before sharing.`,
+      text: `Prepared on ${date(input.now)} by Nora, a health-information and care-navigation tool, from what the patient reported. Urgency comes from Nora’s clinical rules; AI only helps word the summary. It is not a diagnosis and has not been checked by a doctor unless a clinician review is shown above. The patient may have edited it before sharing.`,
     },
   );
 

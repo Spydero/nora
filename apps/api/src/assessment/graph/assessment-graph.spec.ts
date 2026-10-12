@@ -27,7 +27,6 @@ const strepCase: FactMap = {
   diabetes: A,
   cough: A,
   swollen_glands: P(),
-  tonsil_pus: P(),
   difficulty_swallowing: A,
   runny_nose: A,
 };
@@ -64,22 +63,17 @@ const toolCall = (name: string, args: Record<string, unknown>, id = `call_${name
   new AIMessage({ content: '', tool_calls: [{ id, name, args, type: 'tool_call' }] });
 
 const ranking: Record<string, DecisionAnswer> = {
-  best_explanation: { type: 'choice', choice: 'bacterial_pharyngitis', probabilities: { viral_pharyngitis: 0.1, bacterial_pharyngitis: 0.9 }, confidence: 0.8 },
   needs_emergency_care: { type: 'noul', noul: 0.05 },
 };
 
 const goodDraft = {
   summary: 'You described a sore throat with fever and swollen neck glands for three days. A clinician should check this within the next 24–48 hours.',
-  explanations: [
-    { code: 'viral_pharyngitis', likelihood: 'possible', rationale: 'Viral throat infections usually come with a cough or runny nose, which you do not have.', citations: ['E1'] },
-    { code: 'bacterial_pharyngitis', likelihood: 'possible', rationale: 'Fever and swollen glands without a cough can fit a bacterial throat infection.', citations: ['E1'] },
-  ],
   questionsForClinician: ['Do I need a throat swab?'],
   memoryRefs: [],
 };
 
 describe('assessment graph orchestration', () => {
-  it('runs research tools, calibrated ranking, drafting and verification end to end', async () => {
+  it('runs research tools, a safety cross-check, drafting and verification end to end', async () => {
     const { chat, decisions, knowledge, stages, deps } = setup({
       chat: [
         toolCall('search_knowledge', { query: 'bacterial throat infection fever swollen glands' }),
@@ -97,23 +91,21 @@ describe('assessment graph orchestration', () => {
     expect(chat.calls).toHaveLength(3);
     expect(knowledge.searches).toContain('bacterial throat infection fever swollen glands');
     expect(decisions.calls).toHaveLength(1);
-    expect(decisions.calls[0]!.questions.best_explanation).toMatchObject({ type: 'choice' });
+    expect(Object.keys(decisions.calls[0]!.questions)).toEqual(['needs_emergency_care']);
     expect(JSON.stringify(decisions.calls[0]!.state)).not.toContain('urgency');
 
     const r = out.result!;
     expect(r.generator).toBe('llm');
     expect(r.urgency.level).toBe('soon');
     expect(r.urgency.reasons.map((x) => x.ruleId)).toContain('r_strep_features');
-    expect(r.explanations.map((e) => [e.code, e.likelihood])).toEqual([
-      ['bacterial_pharyngitis', 'more_likely'],
-      ['viral_pharyngitis', 'less_likely'],
-    ]);
+    expect(r.explanations).toBeUndefined();
+    expect(r.information!.map((i) => i.code)).toEqual(['info_sore_throat']);
     const ids = new Set(r.evidence.map((e) => e.citationId));
-    for (const e of r.explanations) for (const c of e.citations) expect(ids.has(c)).toBe(true);
-    for (const item of r.carePlan) expect(item.citations.length).toBeGreaterThan(0);
+    for (const i of r.information!) for (const c of i.citations) expect(ids.has(c)).toBe(true);
+    for (const item of r.carePlan.filter((c) => c.id !== 'ci_soon_gp')) expect(item.citations.length).toBeGreaterThan(0);
     expect(r.questionsForClinician).toEqual(['Do I need a throat swab?']);
     expect(r.verification).toEqual({ passed: true, attempts: 1, issues: [] });
-    expect(stages).toEqual(expect.arrayContaining(['checking_safety', 'researching', 'searching_knowledge', 'ranking_explanations', 'drafting', 'verifying', 'finalizing']));
+    expect(stages).toEqual(expect.arrayContaining(['checking_safety', 'researching', 'searching_knowledge', 'cross_checking', 'drafting', 'verifying', 'finalizing']));
     expect(out.usage.inputTokens).toBeGreaterThan(0);
   });
 
@@ -173,7 +165,7 @@ describe('assessment graph orchestration', () => {
   });
 
   it('retries a draft that cites evidence it never retrieved', async () => {
-    const bad = { ...goodDraft, explanations: [{ ...goodDraft.explanations[1]!, citations: ['E99'] }] };
+    const bad = { ...goodDraft, summary: `${goodDraft.summary} [E99]` };
     const { chat, deps } = setup({ chat: [new AIMessage('Evidence is in the case already.')], drafts: [bad, goodDraft], decisions: [ranking] });
     const out = await runAssessment(deps, input(strepCase));
 
@@ -187,7 +179,6 @@ describe('assessment graph orchestration', () => {
   it('falls back to approved template content when drafts keep diagnosing or dosing', async () => {
     const unsafe = {
       summary: 'You have strep throat. Take 500 mg amoxicillin twice a day and there is no need to see a doctor.',
-      explanations: [{ code: 'bacterial_pharyngitis', likelihood: 'more_likely', rationale: 'Classic strep.', citations: ['E1'] }],
       questionsForClinician: [],
       memoryRefs: [],
     };
@@ -247,8 +238,9 @@ describe('assessment graph orchestration', () => {
     expect(out.outcome).toBe('COMPLETED');
     expect(r.generator).toBe('template');
     expect(r.model).toBeNull();
-    expect(r.explanations[0]!.code).toBe('bacterial_pharyngitis');
-    for (const e of r.explanations) expect(e.citations.length).toBeGreaterThan(0);
+    expect(r.explanations).toBeUndefined();
+    expect(r.information!.length).toBeGreaterThan(0);
+    for (const i of r.information!) expect(i.citations.length).toBeGreaterThan(0);
     expect(r.limitations.join(' ')).toContain('switched off');
   });
 
@@ -404,7 +396,6 @@ describe('assessment graph orchestration', () => {
       duration_days: P(2),
       difficulty_swallowing: A,
       swollen_glands: A,
-      tonsil_pus: A,
       breathless: A,
       cough_blood: A,
       cough_productive: A,
@@ -450,13 +441,13 @@ describe('assessment graph orchestration', () => {
       expect(feedback).toContain('37.2');
     });
 
-    it('offers home care only as comfort until the patient is seen, and qualifies reassuring explanations', async () => {
+    it('offers home care only as comfort until the patient is seen, and qualifies reassuring information', async () => {
       const r = (await runAssessment(setup({ ai: false }).deps, input(strepCase))).result!;
       expect(r.urgency.level).toBe('soon');
       const selfCare = r.carePlan.filter((i) => i.kind === 'self_care');
       expect(selfCare.length).toBeGreaterThan(0);
       for (const i of selfCare) expect(i.whileWaiting).toBe(true);
-      expect(r.explanations.find((e) => e.code === 'viral_pharyngitis')!.caution).toMatch(/warning signs/);
+      expect(r.information!.find((i) => i.code === 'info_sore_throat')!.caution).toMatch(/warning signs/);
       expect(r.summary).not.toMatch(/next step|not a diagnosis/i);
     });
 
@@ -466,11 +457,19 @@ describe('assessment graph orchestration', () => {
       expect(r.carePlan.some((i) => i.kind === 'self_care')).toBe(false);
     });
 
-    it('keeps a confirmed answer when a later message disagrees, and says so', async () => {
-      const out = await runAssessment(setup({ ai: false }).deps, input({ ...strepCase, cough: A }, { message: 'I have a cough as well' }));
-      expect(out.facts.cough).toMatchObject({ state: 'ABSENT', source: 'answer' });
-      expect(out.conflicts).toEqual([{ key: 'cough', label: 'Cough', answered: 'no', mentioned: 'yes', resolution: 'kept_answer' }]);
-      expect(out.result!.answerConflicts).toEqual(out.conflicts);
+    it('asks again when a later message contradicts an answer, rather than silently keeping either', async () => {
+      const out = await runAssessment(setup({ ai: false }).deps, input({ ...strepCase, cough: A }, { message: 'I have a cough as well', asked: ALL_ASKED }));
+      expect(out.facts.cough).toMatchObject({ state: 'NOT_ASKED', source: 'unclear' });
+      expect(out.conflicts).toEqual([{ key: 'cough', label: 'Cough', answered: 'no', mentioned: 'yes', resolution: 'ask_again' }]);
+      expect(out.outcome).toBe('NEEDS_INPUT');
+      expect(out.nextQuestionId).toBe('q_cough');
+    });
+
+    it('keeps a "yes" to a warning sign when a later message seems to deny it', async () => {
+      const out = await runAssessment(setup({ ai: false }).deps, input({ ...viralCase, stiff_neck: P() }, { message: 'I do not have a stiff neck' }));
+      expect(out.facts.stiff_neck).toMatchObject({ state: 'PRESENT', source: 'answer' });
+      expect(out.conflicts[0]).toMatchObject({ key: 'stiff_neck', resolution: 'kept_answer' });
+      expect(out.urgency!.triggered.map((t) => t.ruleId)).toContain('warning_sign:stiff_neck');
     });
 
     it('asks again when the patient now doubts an earlier "no", even if the model read it as a yes', async () => {

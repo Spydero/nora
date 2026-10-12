@@ -71,7 +71,8 @@ describe('adaptive questioning', () => {
       const screened = run.concerns.flatMap((c) => c.questions.filter((id) => demoBundle.questions[id]!.purpose === 'safety').flatMap((id) => questionFactKeys(demoBundle.questions[id]!)));
       expect(screened.length).toBeGreaterThan(0);
       expect(screened.filter((k) => isOpen(run.facts[k]))).toEqual([]);
-      expect(safetyFacts(demoBundle, run.concerns).filter((k) => run.facts[k]?.state === 'PRESENT')).toEqual([]);
+      const presenting = new Set(run.concerns.flatMap((c) => c.triggers));
+      expect(safetyFacts(demoBundle, run.concerns).filter((k) => !presenting.has(k) && run.facts[k]?.state === 'PRESENT')).toEqual([]);
       expect(unresolvedSafety(demoBundle, run.facts, run.concerns)).toEqual([]);
     });
 

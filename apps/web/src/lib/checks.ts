@@ -33,6 +33,8 @@ export interface FindingItem {
   value?: number | null;
   unit?: string;
   source: string;
+  /** The patient's own words this was read from, when it came from a message. */
+  said?: string;
 }
 
 export interface EvidenceRef {
@@ -59,21 +61,24 @@ export interface CheckResult {
   urgency: { level: UrgencyLevel; title: string; text: string; reasons: { ruleId: string; message: string; citations: string[] }[] };
   summary: string;
   concerns: { code: string; label: string }[];
-  /** Symptoms in this check; `history` is long-term background (absent on results saved before it existed). */
-  findings: { present: FindingItem[]; absent: FindingItem[]; unknown: FindingItem[]; history?: { present: FindingItem[]; absent: FindingItem[]; unknown: FindingItem[] } };
-  explanations: {
-    code: string;
-    label: string;
-    plain: string;
-    clinical: string;
-    likelihood: "more_likely" | "possible" | "less_likely";
-    rationale: string;
-    citations: string[];
-    caution?: string;
-  }[];
+  /**
+   * Symptoms in this check; `history` is long-term background and `exposures`
+   * are things like a bite, kept apart from symptoms (both absent on older results).
+   */
+  findings: {
+    present: FindingItem[];
+    absent: FindingItem[];
+    unknown: FindingItem[];
+    history?: { present: FindingItem[]; absent: FindingItem[]; unknown: FindingItem[] };
+    exposures?: FindingItem[];
+  };
+  /** Approved general health information for the concern; not about this patient and not a diagnosis. */
+  information?: { code: string; title: string; text: string; citations: string[]; caution?: string }[];
+  /** Possible causes stored by earlier versions of Nora; never shown. */
+  explanations?: unknown[];
   /** `watch` and `whileWaiting` are missing on results saved before they existed. */
   carePlan: CarePlanItem[];
-  answerConflicts?: { key: string; label: string; answered: "yes" | "no"; mentioned: "yes" | "no"; resolution: "kept_answer" | "treated_as_present"; answeredIn?: "profile" }[];
+  answerConflicts?: { key: string; label: string; answered: "yes" | "no"; mentioned: "yes" | "no"; resolution: "kept_answer" | "treated_as_present" | "ask_again"; answeredIn?: "profile" }[];
   questionsForClinician: string[];
   missingInformation: { key: string; label: string }[];
   limitations: string[];
@@ -185,7 +190,8 @@ export const STAGE_LABELS: Record<string, string> = {
   escalating: "Preparing urgent guidance…",
   researching: "Looking up approved health sources…",
   searching_knowledge: "Looking up approved health sources…",
-  ranking_explanations: "Weighing possible explanations…",
+  ranking_explanations: "Cross-checking for warning signs…",
+  cross_checking: "Cross-checking for warning signs…",
   drafting: "Writing your summary…",
   verifying: "Double-checking the summary for safety…",
   finalizing: "Finishing up…",

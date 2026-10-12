@@ -66,10 +66,10 @@ describe.skipIf(!key)('live OpenRouter orchestration', () => {
     };
     const out = await runAssessment(deps(stages), { bundle: demoBundle, context: { patientMessage: null, memory: [], emergency: contacts }, facts, asked: [], turnCount: 8 });
     const r = out.result!;
-    trace('full-run', { stages, generator: r.generator, model: r.model, errors: out.aiErrors, issues: r.verification, ranking: out.ranking, review: out.reviewReasons, summary: r.summary, explanations: r.explanations.map((e) => [e.code, e.likelihood, e.rationale, e.citations]), usage: out.usage });
+    trace('full-run', { stages, generator: r.generator, model: r.model, errors: out.aiErrors, issues: r.verification, review: out.reviewReasons, summary: r.summary, information: r.information, usage: out.usage });
     expect(out.outcome).toBe('COMPLETED');
     expect(r.urgency.level).toBe('soon');
-    expect(out.ranking).not.toBeNull();
+    expect(r.explanations).toBeUndefined();
     expect(['llm', 'template_fallback']).toContain(r.generator);
   });
 

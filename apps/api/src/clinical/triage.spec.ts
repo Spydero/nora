@@ -130,7 +130,7 @@ describe('sources', () => {
     const result = {
       summary: 'See [E5].',
       urgency: { level: 'soon', title: '', text: '', reasons: [{ ruleId: 'r', message: '', citations: ['E3'] }] },
-      explanations: [{ code: 'x', label: '', plain: '', clinical: '', likelihood: 'possible', rationale: 'Fits E3.', citations: ['E3'] }],
+      information: [{ code: 'x', title: '', text: '', citations: ['E3'] }],
       carePlan: [{ id: 'ci', kind: 'self_care', text: '', citations: ['E5'] }],
       evidence: [ref(1, 'src_meningitis'), ref(2, 'src_other'), ref(3, 'src_throat'), ref(4, 'src_unused'), ref(5, 'src_self_care')],
     } as unknown as ResultContent;
@@ -140,7 +140,7 @@ describe('sources', () => {
       ['E2', 'src_self_care'],
     ]);
     expect(out.urgency.reasons[0]!.citations).toEqual(['E1']);
-    expect(out.explanations[0]!.rationale).toBe('Fits E1.');
+    expect(out.information![0]!.citations).toEqual(['E1']);
     expect(out.carePlan[0]!.citations).toEqual(['E2']);
     expect(out.summary).toBe('See [E2].');
   });

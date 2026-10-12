@@ -178,7 +178,7 @@ export class AssessmentWorker implements OnModuleInit, OnModuleDestroy {
       if (!before || before.state !== value.state || (before.value ?? null) !== (value.value ?? null)) changes[key] = value;
     }
     const provenance: Record<string, FactProvenance> = {};
-    for (const o of out.observations) provenance[o.factKey] = { quote: o.quote, assertion: o.assertion, sourceMessageId: message?.id };
+    for (const o of out.observations) provenance[o.factKey] = { quote: o.said ?? o.quote, assertion: o.assertion, sourceMessageId: message?.id };
 
     await this.prisma.$transaction(async (tx) => {
       const current = await tx.assessmentSession.updateMany({ where: { id: session.id, inputVersion }, data: { version: { increment: 1 } } });
@@ -306,13 +306,15 @@ export function conflictNotice(c: AnswerConflict): string {
   const mentioned = c.mentioned === 'yes' ? 'mentions it' : 'suggests you don’t have it';
   if (c.answeredIn === 'profile') {
     const profile = c.answered === 'yes' ? `Your health profile lists “${c.label}”` : `Your health profile doesn’t list “${c.label}”`;
-    return c.resolution === 'treated_as_present'
-      ? `${profile}, but your message ${mentioned}. Nora has used what you said for this check. Please update your profile in Settings if it has changed.`
-      : `${profile}, but your message ${mentioned}. To be safe, Nora has kept what your profile says. Please update your profile in Settings if it has changed.`;
+    if (c.resolution === 'treated_as_present') return `${profile}, but your message ${mentioned}. Nora has used what you said for this check. Please update your profile in Settings if it has changed.`;
+    if (c.resolution === 'ask_again') return `${profile}, but your message ${mentioned}. Nora will ask you about it to be sure. Please update your profile in Settings if it has changed.`;
+    return `${profile}, but your message ${mentioned}. To be safe, Nora has kept what your profile says. Please update your profile in Settings if it has changed.`;
   }
-  return c.resolution === 'treated_as_present'
-    ? `Earlier you answered “${answered}” to “${c.label}”, but your message ${mentioned}. Because it can be a warning sign, Nora is treating it as present to be safe.`
-    : `Earlier you answered “${answered}” to “${c.label}”, but your message ${mentioned}. Nora has kept your answer. If it has changed, tell your doctor.`;
+  if (c.resolution === 'treated_as_present') {
+    return `Earlier you answered “${answered}” to “${c.label}”, but your message ${mentioned}. Because it can be a warning sign, Nora is treating it as present to be safe.`;
+  }
+  if (c.resolution === 'ask_again') return `Earlier you answered “${answered}” to “${c.label}”, but your message ${mentioned}. Nora will ask you again so it has the right answer.`;
+  return `Earlier you answered “${answered}” to “${c.label}”, but your message ${mentioned}. To be safe, Nora has kept your answer. If it has changed, tell your doctor.`;
 }
 
 /** What Nora took from a free-text message, so the patient can correct it straight away. */

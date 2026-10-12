@@ -9,7 +9,7 @@ import { useLoad } from "@/lib/use-load";
 
 const FLAG_INFO: Record<string, { label: string; effect: string }> = {
   assessment: { label: "Symptom checks", effect: "Patients in every organisation are told checks are unavailable and shown emergency contacts instead." },
-  ai_generation: { label: "AI-written explanations", effect: "Results use Nora’s approved templates only. Urgency still comes from the safety rules." },
+  ai_generation: { label: "AI-written summaries", effect: "Results use Nora’s approved templates only. Urgency still comes from the safety rules." },
   provider_handoff: { label: "Booking handoff", effect: "Doctors stay visible but patients cannot open booking pages from Nora." },
 };
 

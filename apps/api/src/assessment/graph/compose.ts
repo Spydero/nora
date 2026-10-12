@@ -1,5 +1,5 @@
 import { type BundleContent, type ConcernDef, type UrgencyLevel, maxUrgency, urgencyRank } from '../../clinical/bundle.schema.js';
-import { type FactMap, quantity, type TriggeredRule, type UrgencyOutcome, warningLevel } from '../../clinical/rules-engine.js';
+import { evaluate, type FactMap, quantity, type TriggeredRule, type UrgencyOutcome, warningLevel } from '../../clinical/rules-engine.js';
 import { type MemoryItem, memoryLine } from '../../memory/memory.types.js';
 import type { TriageDecision } from '../../clinical/triage.js';
 import type { AnswerConflict, EpisodeContext, FindingItem, Generator, ResultContent, ResultStatus } from '../result.types.js';
@@ -24,25 +24,44 @@ export function concernDefs(bundle: BundleContent, codes: string[]): ConcernDef[
   return bundle.concerns.filter((c) => codes.includes(c.code));
 }
 
+/** Where Nora read a fact from the patient's own message, as opposed to an answer, the profile or a calculation. */
+const READ_FROM_MESSAGE = new Set(['rules', 'llm']);
+
 /**
  * Findings are what the patient told Nora in this check, as present, absent
- * or unknown. Long-term history (from the answers or the profile) is kept
- * apart from the consultation's symptoms; facts derived from memory and
- * context such as age are not findings.
+ * or unknown. Long-term history (from the answers or the profile) and
+ * exposures such as a bite are kept apart from the consultation's symptoms;
+ * facts derived from memory and context such as age are not findings. Facts
+ * read from a message keep the patient's own words.
  */
 export function findings(bundle: BundleContent, facts: FactMap): ResultContent['findings'] {
   const out: ResultContent['findings'] = { present: [], absent: [], unknown: [] };
   const history: NonNullable<ResultContent['findings']['history']> = { present: [], absent: [], unknown: [] };
+  const exposures: FindingItem[] = [];
   for (const [key, f] of Object.entries(facts)) {
     const def = bundle.facts[key];
     if (!def || def.kind === 'context' || key === 'age' || f.source === 'memory') continue;
-    const item: FindingItem = { key, label: def.label, source: f.source ?? 'unknown', ...(def.type === 'number' ? { value: f.value ?? null, unit: def.unit } : {}) };
+    const item: FindingItem = {
+      key,
+      label: def.label,
+      source: f.source ?? 'unknown',
+      ...(def.type === 'number' ? { value: f.value ?? null, unit: def.unit } : {}),
+      ...(f.quote && READ_FROM_MESSAGE.has(f.source ?? '') ? { said: f.quote } : {}),
+    };
+    if (def.kind === 'exposure' && f.state === 'PRESENT') {
+      exposures.push(item);
+      continue;
+    }
     const into = def.kind === 'history' ? history : out;
     if (f.state === 'PRESENT') into.present.push(item);
     else if (f.state === 'ABSENT') into.absent.push(item);
     else if (f.state === 'UNKNOWN' || f.state === 'DECLINED') into.unknown.push(item);
   }
-  return history.present.length || history.absent.length || history.unknown.length ? { ...out, history } : out;
+  return {
+    ...out,
+    ...(history.present.length || history.absent.length || history.unknown.length ? { history } : {}),
+    ...(exposures.length ? { exposures } : {}),
+  };
 }
 
 /**
@@ -62,6 +81,7 @@ export function caseSummary(bundle: BundleContent, facts: FactMap, concerns: str
     age: facts.age?.value ?? null,
     concerns: concernDefs(bundle, concerns).map((c) => ({ code: c.code, label: c.label })),
     thisConsultation: { present: f.present.map(fmt), absent: f.absent.map(fmt), unknown: f.unknown.map(fmt) },
+    exposures: (f.exposures ?? []).map(fmt),
     healthBackground: { present: (f.history?.present ?? []).map(fmt), absent: (f.history?.absent ?? []).map(fmt) },
     urgency: urgency ? { level: urgency.level, reasons: urgency.triggered.map((t) => t.message), final: true } : null,
     records: memory.map(memoryLine),
@@ -116,8 +136,28 @@ export function recordQuestions(memory: MemoryItem[]): { questions: string[]; re
   };
 }
 
-function cite(registry: EvidenceRegistry, sourceKeys: string[]): string[] {
-  return [...new Set(sourceKeys.map((k) => registry.firstForSource(k)).filter((c): c is string => !!c))];
+/** The passage of the source that supports this particular claim. */
+function cite(registry: EvidenceRegistry, sourceKey: string, claim: string, heading?: string): string[] {
+  const id = registry.forClaim(sourceKey, claim, heading);
+  return id ? [id] : [];
+}
+
+/** Approved general information for these concerns that applies to what the patient reported. */
+export function information(concerns: ConcernDef[], facts: FactMap) {
+  return concerns.flatMap((c) => c.information).filter((i) => !i.showIf || evaluate(i.showIf, facts));
+}
+
+/** Every source the result may cite: urgency reasons, care items and general information. */
+export function citedSourceKeys(bundle: BundleContent, concerns: ConcernDef[], urgency: UrgencyOutcome, facts: FactMap): string[] {
+  return [
+    ...new Set([
+      ...concerns.flatMap((c) => c.sourceKeys),
+      ...information(concerns, facts).map((i) => i.sourceKey),
+      ...concerns.flatMap((c) => c.careItems.map((id) => bundle.careItems[id]!.sourceKey)),
+      ...urgency.triggered.flatMap((t) => [t.sourceKey, ...t.careItems.map((id) => bundle.careItems[id]!.sourceKey)]),
+      ...bundle.urgencyActions[urgency.level].careItems.map((id) => bundle.careItems[id]!.sourceKey),
+    ]),
+  ];
 }
 
 /**
@@ -155,7 +195,7 @@ export function carePlan(
         kind: item.kind,
         text: item.text,
         timeframe: item.timeframe,
-        citations: cite(registry, [item.sourceKey]),
+        citations: cite(registry, item.sourceKey, item.text, item.sourceHeading),
         watch,
         ...(item.kind === 'self_care' && level === 'soon' ? { whileWaiting: true } : {}),
       },
@@ -163,52 +203,31 @@ export function carePlan(
   });
 }
 
-/** Deterministic draft from approved content; used without a model and as the verified fallback. */
-export function templateDraft(
-  bundle: BundleContent,
-  facts: FactMap,
-  concerns: ConcernDef[],
-  registry: EvidenceRegistry,
-  ranking?: Record<string, number>,
-  memory: MemoryItem[] = [],
-): Draft {
+/**
+ * Deterministic summary of what the patient reported; used without a model
+ * and as the verified fallback. It restates facts only, never a cause.
+ */
+export function templateDraft(bundle: BundleContent, facts: FactMap, memory: MemoryItem[] = []): Draft {
   const fromRecords = recordQuestions(memory);
-  const present = (k: string) => facts[k]?.state === 'PRESENT';
   const label = (k: string) => bundle.facts[k]?.label.toLowerCase() ?? k;
-  const candidates = concerns.flatMap((c) => c.explanations);
-  const scored = candidates
-    .map((e) => {
-      const support = e.supportingFacts.filter(present);
-      const against = e.againstFacts.filter(present);
-      const score = ranking?.[e.code] ?? support.length - against.length;
-      return { e, support, against, score };
-    })
-    .sort((a, b) => b.score - a.score);
-
-  const likelihood = (score: number, i: number): Draft['explanations'][number]['likelihood'] => {
-    if (ranking) return score >= 0.5 ? 'more_likely' : score >= 0.15 ? 'possible' : 'less_likely';
-    return i === 0 && score > 0 ? 'more_likely' : score < 0 ? 'less_likely' : 'possible';
-  };
-
-  const symptoms = Object.entries(facts)
-    .filter(([k, f]) => f.state === 'PRESENT' && bundle.facts[k]?.type === 'boolean' && bundle.facts[k]?.kind === 'symptom')
-    .map(([k]) => label(k));
+  const presentOf = (kind: string) =>
+    Object.entries(facts)
+      .filter(([k, f]) => f.state === 'PRESENT' && f.source !== 'memory' && bundle.facts[k]?.type === 'boolean' && bundle.facts[k]?.kind === kind)
+      .map(([k]) => label(k));
+  const symptoms = presentOf('symptom');
+  const exposures = presentOf('exposure');
   const days = facts.duration_days?.state === 'PRESENT' ? Number(facts.duration_days.value) : null;
-  const duration = days === null ? '' : days < 1 ? ' since today' : ` for about ${days} ${days === 1 ? 'day' : 'days'}`;
+  const duration = days === null ? '' : days < 1 ? ' since today' : ` for about ${quantity(days, 'days')}`;
+  const ago = facts.exposure_days?.state === 'PRESENT' ? Number(facts.exposure_days.value) : null;
+  const when = ago === null ? '' : ago < 1 ? ' (today)' : ` (about ${quantity(ago, 'days')} ago)`;
 
   return {
-    summary: `You described ${symptoms.length ? listText(symptoms) : 'your symptoms'}${duration}.`,
-    explanations: scored.map(({ e, support, against, score }, i) => ({
-      code: e.code,
-      likelihood: likelihood(score, i),
-      rationale: [
-        support.length ? `Fits with: ${listText(support.map(label))}.` : 'No specific features point strongly towards this.',
-        against.length ? `Less consistent with: ${listText(against.map(label))}.` : '',
-      ]
-        .filter(Boolean)
-        .join(' '),
-      citations: cite(registry, e.sourceKeys),
-    })),
+    summary: [
+      symptoms.length || !exposures.length ? `You described ${symptoms.length ? listText(symptoms) : 'your symptoms'}${duration}.` : '',
+      exposures.length ? `You ${symptoms.length ? 'also ' : ''}told Nora about: ${listText(exposures)}${when}.` : '',
+    ]
+      .filter(Boolean)
+      .join(' '),
     questionsForClinician: fromRecords.questions,
     memoryRefs: fromRecords.refs,
   };
@@ -254,9 +273,9 @@ export function citedEvidence(result: ResultContent): ResultContent {
   const order: string[] = [];
   const see = (ids: string[]) => ids.forEach((id) => order.includes(id) || order.push(id));
   see(result.urgency.reasons.flatMap((r) => r.citations));
-  see(result.explanations.flatMap((e) => e.citations));
+  see((result.information ?? []).flatMap((i) => i.citations));
   see(result.carePlan.flatMap((c) => c.citations));
-  see([result.summary, ...result.explanations.map((e) => e.rationale)].flatMap((s) => s.match(/\bE\d+\b/g) ?? []));
+  see([result.summary].flatMap((s) => s.match(/\bE\d+\b/g) ?? []));
   const known = new Map(result.evidence.map((e) => [e.citationId, e]));
   const kept = order.filter((id) => known.has(id));
   const renumber = new Map(kept.map((id, i) => [id, `E${i + 1}`]));
@@ -266,17 +285,18 @@ export function citedEvidence(result: ResultContent): ResultContent {
     ...result,
     summary: text(result.summary),
     urgency: { ...result.urgency, reasons: result.urgency.reasons.map((r) => ({ ...r, citations: ids(r.citations) })) },
-    explanations: result.explanations.map((e) => ({ ...e, rationale: text(e.rationale), citations: ids(e.citations) })),
+    ...(result.information ? { information: result.information.map((i) => ({ ...i, citations: ids(i.citations) })) } : {}),
     carePlan: result.carePlan.map((c) => ({ ...c, citations: ids(c.citations) })),
     evidence: kept.map((id) => ({ ...known.get(id)!, citationId: renumber.get(id)! })),
   };
 }
 
 const WARNING_CAUTION = 'Your answers include warning signs, so don’t wait for this to settle on its own. Follow the advice above.';
+/** General information about recovery reads as reassurance when the rules found warning signs. */
+const SELF_RESOLVING_INFO = [...SELF_RESOLVING, /\bgets? better\b/i, /\b(clears?|settles?|improves?|recover|stops?)\b[^.]{0,40}\bwithin\b/i];
 
 export function buildResult(a: BuildArgs): ResultContent {
   const action = a.bundle.urgencyActions[a.urgency.level];
-  const byCode = new Map(a.concerns.flatMap((c) => c.explanations).map((e) => [e.code, e]));
   const warned = urgencyRank(a.urgency.level) >= urgencyRank('soon');
   const handoffFrames: Record<UrgencyLevel, string> = { emergency: 'Now', urgent: 'Today', soon: 'Within 24–48 hours', routine: 'Within 1–2 weeks if not improving', self_care: 'If symptoms continue or worsen' };
   return citedEvidence({
@@ -286,17 +306,18 @@ export function buildResult(a: BuildArgs): ResultContent {
       level: a.urgency.level,
       title: action.title,
       text: action.text,
-      reasons: a.urgency.triggered.map((t) => ({ ruleId: t.ruleId, message: t.message, citations: cite(a.registry, [t.sourceKey]) })),
+      reasons: a.urgency.triggered.map((t) => ({ ruleId: t.ruleId, message: t.message, citations: cite(a.registry, t.sourceKey, t.message, t.sourceHeading) })),
     },
     summary: a.draft.summary,
     concerns: a.concerns.map((c) => ({ code: c.code, label: c.label })),
     findings: findings(a.bundle, a.facts),
-    explanations: a.draft.explanations.flatMap((d) => {
-      const e = byCode.get(d.code);
-      if (!e) return [];
-      const caution = warned && SELF_RESOLVING.some((re) => re.test(e.plain)) ? { caution: WARNING_CAUTION } : {};
-      return [{ code: e.code, label: e.label, plain: e.plain, clinical: e.clinical, likelihood: d.likelihood, rationale: d.rationale, citations: d.citations, ...caution }];
-    }),
+    information: (a.urgency.level === 'emergency' ? [] : information(a.concerns, a.facts)).map((i) => ({
+      code: i.code,
+      title: i.title,
+      text: i.text,
+      citations: cite(a.registry, i.sourceKey, i.text, i.sourceHeading),
+      ...(warned && SELF_RESOLVING_INFO.some((re) => re.test(i.text)) ? { caution: WARNING_CAUTION } : {}),
+    })),
     carePlan: carePlan(a.bundle, a.urgency.level, a.urgency.triggered, a.concerns, a.registry, a.facts),
     questionsForClinician: uniqueQuestions(a.draft.questionsForClinician),
     missingInformation: a.missing.map((key) => ({ key, label: a.bundle.facts[key]?.label ?? key })),
@@ -332,7 +353,7 @@ export function escalationResult(
 ): ResultContent {
   const f = findings(bundle, facts);
   const labels = (items: FindingItem[]) => items.filter((x) => bundle.facts[x.key]?.type === 'boolean').map((x) => x.label.toLowerCase());
-  const told = labels(f.present);
+  const told = labels([...f.present, ...(f.exposures ?? [])]);
   const background = labels(f.history?.present ?? []);
   return buildResult({
     ...extra,
@@ -351,7 +372,6 @@ export function escalationResult(
       ]
         .filter(Boolean)
         .join(' '),
-      explanations: [],
       questionsForClinician: [],
       memoryRefs: [],
     },
@@ -386,7 +406,7 @@ export function unsupportedResult(
     registry,
     memory,
     answerConflicts,
-    draft: { summary: message, explanations: [], questionsForClinician: [], memoryRefs: [] },
+    draft: { summary: message, questionsForClinician: [], memoryRefs: [] },
     status: 'UNSUPPORTED',
     generator: 'rules',
     model: null,

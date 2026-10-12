@@ -59,16 +59,16 @@ export function aboveLevelIssues(texts: string[], level: UrgencyLevel): string[]
 }
 
 /**
- * The last check before a result is shown: the summary, explanations and
+ * The last check before a result is shown: the summary, general information and
  * care plan must all agree with the urgency the rules set. "Get help if…"
  * warnings and comfort measures while waiting are conditional, so only their
  * stronger wording is allowed.
  */
-export function recommendationConflicts(result: Pick<ResultContent, 'urgency' | 'summary' | 'explanations' | 'carePlan'>): string[] {
+export function recommendationConflicts(result: Pick<ResultContent, 'urgency' | 'summary' | 'information' | 'carePlan'>): string[] {
   const level = result.urgency.level;
   const steps = result.carePlan.filter((c) => !c.watch && !c.whileWaiting).map((c) => c.text);
-  const statements = [result.summary, ...result.explanations.flatMap((e) => [e.plain, e.rationale]), ...steps];
-  return [...new Set([...urgencyIssues([result.summary, ...result.explanations.map((e) => e.rationale), ...steps], level), ...aboveLevelIssues(statements, level)])];
+  const statements = [result.summary, ...(result.information ?? []).map((i) => i.text), ...steps];
+  return [...new Set([...urgencyIssues([result.summary, ...steps], level), ...aboveLevelIssues(statements, level)])];
 }
 
 const NEGATION = /\b(no|not|never|without|denies|denied|none|neither|nor|free of|absence of|don['’]?t|doesn['’]?t|didn['’]?t|haven['’]?t|hasn['’]?t|isn['’]?t|aren['’]?t)\b/i;
@@ -103,7 +103,7 @@ export function answerFacts(bundle: BundleContent, facts: FactMap): AnswerFacts 
     const f = facts[key];
     if (key === 'age' || def.kind === 'context') continue;
     if (!f || f.source === 'memory' || f.state === 'NOT_ASKED' || f.state === 'UNKNOWN' || f.state === 'DECLINED') {
-      if (def.kind === 'symptom' && def.type === 'boolean') out.unreported!.push({ label: def.label, terms: termsOf(def.label, def.synonyms) });
+      if ((def.kind === 'symptom' || def.kind === 'exposure') && def.type === 'boolean') out.unreported!.push({ label: def.label, terms: termsOf(def.label, def.synonyms) });
       continue;
     }
     if (def.type === 'number') {
@@ -173,12 +173,15 @@ export function answerIssues(texts: string[], answers: AnswerFacts): string[] {
           }
         }
       }
-      for (const n of answers.numbers) {
-        const unit = UNIT_PATTERN[n.unit];
+      for (const unitName of new Set(answers.numbers.map((n) => n.unit))) {
+        const unit = UNIT_PATTERN[unitName];
         if (!unit) continue;
+        const same = answers.numbers.filter((n) => n.unit === unitName);
         for (const m of s.matchAll(new RegExp(`(\\d+(?:\\.\\d+)?)${unit}`, 'gi'))) {
           if (BOUND_BEFORE.test(s.slice(0, m.index)) || BOUND_AFTER.test(s.slice(m.index + m[0].length))) continue;
-          if (Math.abs(Number(m[1]) - n.value) > 0.05) issues.add(`States ${m[0].trim()}, but your answer for "${n.label}" was ${n.value} ${n.unit}.`);
+          if (same.some((n) => Math.abs(Number(m[1]) - n.value) <= 0.05)) continue;
+          const told = same.map((n) => `"${n.label}" was ${n.value} ${n.unit}`).join(' and ');
+          issues.add(`States ${m[0].trim()}, but your answer for ${told}.`);
         }
       }
     }
