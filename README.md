@@ -14,13 +14,11 @@
 
 <p align="center">
   <b>Nora</b> is an enterprise, multi-tenant health assistant that helps adults understand common symptoms,<br>
-  decide <i>how urgently</i> to seek care, and hand off to the right clinician — with every claim traceable to approved evidence.
+  decide <i>how urgently</i> to seek care, and hand off to the right clinician: with every claim traceable to approved evidence.
 </p>
 
 > [!WARNING]
 > **Not a medical device. Not for real patients.** All clinical content in this repository (rules, questions, general information, knowledge sources, providers, medicines) is **synthetic demo data** that has not been clinically validated. It exists to exercise the software end to end.
-
----
 
 ## Why Nora is different
 
@@ -270,7 +268,7 @@ Every seeded account uses the password **`NoraDemo!2026`** and organisation code
 | Email | Role | What to try |
 | --- | --- | --- |
 | `patient@demo.nora.local` | Patient | Checks, history, preferences, privacy controls, doctors, appointments, medicines. Shares checks with clinicians. |
-| `priya@demo.nora.local` | Patient | Fresh account — exercises onboarding and consent |
+| `priya@demo.nora.local` | Patient | Fresh account: exercises onboarding and consent |
 | `clinician@demo.nora.local` | Clinician | Review queue: pick up a flagged check, agree or change the urgency, message the patient |
 | `coordinator@demo.nora.local` | Care coordinator | Read-only view of the review queue and cases |
 | `admin@demo.nora.local` | Tenant admin | Analytics (7/30/90 days), feature switches, members, doctor listings, audit log |
@@ -288,7 +286,7 @@ Nora talks to models through [OpenRouter](https://openrouter.ai) first and falls
 | `OPENROUTER_FAST_MODEL` | `nvidia/nemotron-3.5-lightning:free` | Structured symptom extraction |
 | `OPENROUTER_DECISION_MODEL` | `inception/mercury-decide:free` | Calibrated ranking of approved candidates and an urgency cross-check (can escalate to review, never lowers urgency) |
 | `OPENROUTER_EMBEDDING_MODEL` | `nvidia/llama-nemotron-embed-vl-1b-v2:free` | Knowledge embeddings (pgvector) |
-| `GEMINI_API_KEY` | — | Enables the Gemini fallback |
+| `GEMINI_API_KEY` |: | Enables the Gemini fallback |
 | `GEMINI_MODEL` | `gemini-3.5-flash-lite` | Fallback research agent and drafting |
 | `GEMINI_FAST_MODEL` | `gemini-3.1-flash-lite` | Fallback symptom extraction |
 
@@ -362,7 +360,7 @@ Tokens, typography, layout and accessibility rules live in [`packages/brand`](pa
 
 ## Roadmap
 
-**P0 — core safe assessment** (in progress)
+**P0: core safe assessment** (in progress)
 
 - [x] Containerised infra, brand system, JWT auth with refresh rotation and CSRF
 - [x] Data model for consent, profiles, checks, results, review, providers, audit and privacy
@@ -386,12 +384,10 @@ Tokens, typography, layout and accessibility rules live in [`packages/brand`](pa
 - [ ] Clinician sign-off of the clinical bundle (see the review notes on rules and care steps in `demo-bundle.ts`)
 - [ ] Server-sent events with `Last-Event-ID` resume; embedding index and vector search
 
-**P1** — voice input, report upload, live scheduling, notifications, clinician-signed guidance, more languages.
-**P2** — personalised medicine guidance, EHR/FHIR integration, payments.
-
----
+**P1**: voice input, report upload, live scheduling, notifications, clinician-signed guidance, more languages.
+**P2**: personalised medicine guidance, EHR/FHIR integration, payments.
 
 <p align="center">
   <img src="packages/brand/assets/nora-mark.svg" alt="" width="32"><br>
-  <sub>Proprietary — all rights reserved. Synthetic demo content only; not for clinical use.</sub>
+  <sub>Proprietary: all rights reserved. Synthetic demo content only; not for clinical use.</sub>
 </p>
